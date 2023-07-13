@@ -17,7 +17,7 @@ It is important to note, that the WebX IPv6 address is not the public key itself
 ### Routing
 Each peer in WebX network stores a tree of peers it knows about (3 levels deep; neighbors of neighbors of neighbors). The tree is updated evert time peer connects to/disconnects from another peer or gets information that some peer from its tree connected to/disconnected from another peer. The tree is used to determine which neighbor to forward packet to in order to get to the destination peer. If the tree does not contain the destination peer, the peer form the same country (and in the next step timezone) is picked. If there are still no such peers, the packet is forwarded to the first neighbor in the tree. If there are no neighbors, the packet is dropped.
 
-To prevent infinite routes and routing loops, a Hop Limit field of IPv6 (equivalent of IPv4's TTL field) heder is limited to 16. This way, the packet can travel at most 16 hops before it is dropped. Also a packet is dropped when it would be routed back to the source peer.
+To prevent infinite routes and routing loops, a Hop Limit field of IPv6 (equivalent of IPv4's TTL field) header is limited to 16. This way, the packet can travel at most 16 hops before it is dropped. Also a packet is dropped when it would be routed back to the source peer.
 
 ## How to build and run it?
 ### Dependencies
