@@ -128,16 +128,16 @@ def main():
             print("WebX is not running or you are running the script as different user as WebX", file=sys.stderr)
             sys.exit(1)
 
+    if len(sys.argv) > 1:
+        execute_command(sock, " ".join(sys.argv[1:]))
+        sys.exit(0)
+
     try:
         import readline
         readline.parse_and_bind("tab: complete")
         readline.set_completer(readline_completer)
     except ImportError:
         pass
-
-    if len(sys.argv) > 1:
-        execute_command(sock, " ".join(sys.argv[1:]))
-        sys.exit(0)
 
     while True:
         cmd = input("WebX CLI> ").strip()

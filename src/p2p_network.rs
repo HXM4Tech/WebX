@@ -52,17 +52,23 @@ impl PeerTree {
         }
     }
 
-    fn align_level(&mut self, our_level: u8) {
+    fn align_level(&mut self, our_level: u8) -> bool {
         self.level = our_level;
 
-        if our_level >= MAX_PEER_TREE_DEPTH {
+        if our_level > MAX_PEER_TREE_DEPTH {
+            return false;
+        }
+
+        if our_level == MAX_PEER_TREE_DEPTH {
             self.connected_peers.clear();
-            return;
+            return true;
         }
 
         for peer in self.connected_peers.iter_mut() {
-            peer.align_level(our_level + 1);
+            let _ = peer.align_level(our_level + 1);
         }
+
+        true
     }
 
     pub fn register_peer(&mut self, mut peer: PeerTree) -> Result<(), &str> {
@@ -74,10 +80,11 @@ impl PeerTree {
             return Err("Peer already connected");
         }
 
-        peer.align_level(self.level + 1);
-        peer.unregister_peer_from_all_levels(self.ipv6);
+        if peer.align_level(self.level + 1) {
+            peer.unregister_peer_from_all_levels(self.ipv6);
+            self.connected_peers.push(peer);
+        }
 
-        self.connected_peers.push(peer);
         Ok(())
     }
 
@@ -121,6 +128,10 @@ impl PeerTree {
             if route_type == PeerTreeRouteDest::Exact
                 && (shortest_route.is_empty() || route.len() < shortest_route.len())
             {
+                if route.len() == 1 {
+                    return (route, PeerTreeRouteDest::Exact);
+                }
+                
                 shortest_route = route;
             } else if route_type == PeerTreeRouteDest::SameCountry
                 && (shortest_route_same_country.is_empty()
@@ -227,7 +238,7 @@ impl PeerTree {
             connected_peers,
             level: 0,
         };
-        res.align_level(0);
+        let _ = res.align_level(0);
 
         res
     }
