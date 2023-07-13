@@ -1,9 +1,9 @@
-use tokio::net::UnixListener;
-use tokio::sync::RwLock;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use crate::STATS;
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixListener;
+use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 pub struct Stats {
     pub total_packets_sent: Mutex<u128>,
@@ -45,7 +45,11 @@ pub struct CliSocket {
 }
 
 impl CliSocket {
-    pub fn new(uid: u32, peers_tree: Arc<RwLock<crate::p2p_network::PeerTree>>, wallet: crate::wallet::Wallet) -> Self {
+    pub fn new(
+        uid: u32,
+        peers_tree: Arc<RwLock<crate::p2p_network::PeerTree>>,
+        wallet: crate::wallet::Wallet,
+    ) -> Self {
         let unix_socket_path = format!("/tmp/webx-{}.sock", uid);
 
         Self {
@@ -63,7 +67,10 @@ impl CliSocket {
 
         if let Ok(listener) = UnixListener::bind(&self.unix_socket_path) {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&self.unix_socket_path, std::fs::Permissions::from_mode(0o600));
+            let _ = std::fs::set_permissions(
+                &self.unix_socket_path,
+                std::fs::Permissions::from_mode(0o600),
+            );
             let _ = std::process::Command::new("chown")
                 .arg(format!("{}", self.uid))
                 .arg(&self.unix_socket_path)
@@ -84,17 +91,34 @@ impl CliSocket {
                                 match CliMsgType::from_byte(buf[0]) {
                                     CliMsgType::StatsRequest => {
                                         let mut msg = vec![CliMsgType::StatsResponse as u8];
-                                        msg.extend_from_slice(&STATS.total_packets_sent.lock().await.to_be_bytes());
-                                        msg.extend_from_slice(&STATS.total_packets_received.lock().await.to_be_bytes());
-                                        msg.extend_from_slice(&STATS.total_packets_forwarded.lock().await.to_be_bytes());
+                                        msg.extend_from_slice(
+                                            &STATS.total_packets_sent.lock().await.to_be_bytes(),
+                                        );
+                                        msg.extend_from_slice(
+                                            &STATS
+                                                .total_packets_received
+                                                .lock()
+                                                .await
+                                                .to_be_bytes(),
+                                        );
+                                        msg.extend_from_slice(
+                                            &STATS
+                                                .total_packets_forwarded
+                                                .lock()
+                                                .await
+                                                .to_be_bytes(),
+                                        );
                                         if socket.write_all(&msg).await.is_err() {
                                             return;
                                         }
-                                    },
+                                    }
                                     CliMsgType::KnownPeersRequest => {
                                         let mut msg = vec![CliMsgType::KnownPeersResponse as u8];
                                         let peers_tree = t_peers_tree.read().await;
-                                        let peers: std::collections::HashMap<std::net::Ipv6Addr, u8> = peers_tree.get_known_peers();
+                                        let peers: std::collections::HashMap<
+                                            std::net::Ipv6Addr,
+                                            u8,
+                                        > = peers_tree.get_known_peers();
 
                                         msg.extend_from_slice(&(peers.len() as u16).to_be_bytes());
                                         for (peer, lvl) in peers {
@@ -105,7 +129,7 @@ impl CliSocket {
                                         if socket.write_all(&msg).await.is_err() {
                                             return;
                                         }
-                                    },
+                                    }
                                     CliMsgType::WalletInfoRequest => {
                                         let mut msg = vec![CliMsgType::WalletInfoResponse as u8];
                                         msg.extend_from_slice(&wallet.public_key.to_sec1_bytes());
@@ -114,7 +138,7 @@ impl CliSocket {
                                         if socket.write_all(&msg).await.is_err() {
                                             return;
                                         }
-                                    },
+                                    }
                                     _ => {
                                         continue;
                                     }

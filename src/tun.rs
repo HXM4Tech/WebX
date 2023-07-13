@@ -15,10 +15,14 @@ impl TunKanal {
         let (tx_front, rx_back) = kanal::unbounded_async();
         let (tx_back, rx_front) = kanal::unbounded_async();
 
-        (Self {
-            tx: tx_front,
-            rx: rx_front,
-        }, tx_back.to_sync(), rx_back.to_sync())
+        (
+            Self {
+                tx: tx_front,
+                rx: rx_front,
+            },
+            tx_back.to_sync(),
+            rx_back.to_sync(),
+        )
     }
 
     pub async fn send(&mut self, data: Vec<u8>) -> Result<(), kanal::SendError> {
@@ -29,7 +33,6 @@ impl TunKanal {
         self.rx.recv().await
     }
 }
-
 
 pub struct Tun {
     iface: Option<Iface>,
@@ -127,11 +130,9 @@ impl Tun {
             }
         });
 
-        tokio::task::spawn_blocking(move || {
-            loop {
-                if let Ok(data) = back_rx.recv() {
-                    let _ = iface.send(&data);
-                }
+        tokio::task::spawn_blocking(move || loop {
+            if let Ok(data) = back_rx.recv() {
+                let _ = iface.send(&data);
             }
         });
 
