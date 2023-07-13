@@ -1,0 +1,8 @@
+#!/bin/sh
+
+if [ $1 != "remove" ]; then
+    exit 0
+fi
+
+systemctl stop --now webx@\* --all
+find -L /etc/systemd/ -samefile /lib/systemd/system/webx@.service -delete

@@ -1,0 +1,14 @@
+# Compiled source + debian packages
+debug/
+target/
+
+# Cargo lockfile
+Cargo.lock
+
+# Arch linux packages
+*.pkg.tar.xz
+*.pkg.tar.gz
+*.pkg.tar.zst
+*.pkg.tar.lz
+*.pkg.tar.bz2
+*.pkg.tar
