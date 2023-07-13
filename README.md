@@ -23,7 +23,7 @@ To prevent infinite routes and routing loops, a Hop Limit field of IPv6 (equival
 ### Dependencies
 You will need to have a rust toolchain instaled along with `build-essential` package on Debian-based distros, `base-devel` on Arch-based distros or corresponding packages on other distros to build WebX.
 
-WebX itself also depends on `libcap`, `python3` and `coreutils` packages, but those are usually preinstalled on most distros.
+WebX itself also depends on `libcap`, `python3`, `findutils`, `iproute2` and `coreutils` packages, but those are usually preinstalled on most distros.
 
 You can get rust toolchain from [rustup.rs](https://rustup.rs/).
 
