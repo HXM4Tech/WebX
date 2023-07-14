@@ -33,10 +33,10 @@ codegen-units = 1
 lto = true
 
 [package.metadata.deb]
-maintainer-scripts = "package_debian/"
+maintainer-scripts = "package-debian/"
 assets = [
     ["target/release/webx", "usr/bin/webxd", "755"],
-    ["py-src/cli.py", "usr/bin/webx-cli", "755"],
+    ["src/cli.py", "usr/bin/webx-cli", "755"],
     ["conf/config.toml", "etc/webx/config.toml", "644"],
     ["conf/webx@.service", "lib/systemd/system/webx@.service", "644"]
 ]

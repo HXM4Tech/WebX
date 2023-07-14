@@ -1,6 +1,7 @@
 [Unit]
 Description=WebX P2P network
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 ExecStart=/usr/bin/webxd
@@ -11,5 +12,4 @@ StandardOutput=journal
 StandardError=journal
 
 [Install]
-WantedBy=default.target
-RequiredBy=network.target
+WantedBy=multi-user.target

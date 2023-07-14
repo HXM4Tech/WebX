@@ -7,7 +7,7 @@ import pwd
 import ipaddress
 
 def readline_completer(text, state):
-    options = ["exit", "help", "stats", "known_peers", "wallet_info"]
+    options = ["exit", "help", "stats", "known-peers", "wallet-info"]
 
     for option in options:
         if option.startswith(text):
@@ -23,7 +23,7 @@ def execute_command(sock, cmd):
         print("\nGoodbye!")
         sys.exit(0)
     elif cmd == "help":
-        print("Commands: exit, help, stats, known_peers, wallet_info")
+        print("Commands: exit, help, stats, known-peers, wallet-info")
     elif cmd == "stats":
         sock.send(b"\x00")
 
@@ -41,7 +41,7 @@ def execute_command(sock, cmd):
         print(f"| Total packets forwarded | {total_packets_forwarded:<23} |")
         print("+" + "-" * 25 + "+" + "-" * 25 + "+")
         print()
-    elif cmd == "known_peers":
+    elif cmd == "known-peers":
         sock.send(b"\x02")
 
         msg_type = sock.recv(1)
@@ -66,7 +66,7 @@ def execute_command(sock, cmd):
         
         print("+" + "-" * 57 + "+")
         print()
-    elif cmd == "wallet_info":
+    elif cmd == "wallet-info":
         sock.send(b"\x04")
 
         msg_type = sock.recv(1)
