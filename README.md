@@ -53,7 +53,7 @@ git clone https://github.com/HXM4Tech/webx.git
 cd webx
 cargo build --release
 
-install install -Dm755 "target/release/webx" "$HOME/.local/bin/webxd"
+install -Dm755 "target/release/webx" "$HOME/.local/bin/webxd"
 sudo setcap CAP_NET_ADMIN+eip "$HOME/.local/bin/webx"
 install -Dm755 "py-src/cli.py" "$HOME/.local/bin/webx-cli"
 install -Dm644 "config.toml" "$HOME/.config/webx/config.toml"
