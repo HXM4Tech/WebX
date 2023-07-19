@@ -1,13 +1,13 @@
 pub fn get_tz() -> chrono_tz::Tz {
-    let tz = std::process::Command::new("timedatectl")
-        .arg("show")
-        .output()
-        .expect("failed to execute timedatectl");
-    let tz = String::from_utf8(tz.stdout).expect("failed to parse timedatectl output");
-    let tz = tz.split('\n').collect::<Vec<&str>>();
-    let tz = tz.iter().find(|x| x.starts_with("Timezone=")).unwrap();
-    let tz = tz.split('=').collect::<Vec<&str>>();
-    let tz: chrono_tz::Tz = tz[1].parse().unwrap();
+    let tz = std::fs::read_link("/etc/localtime")
+        .expect("failed to read /etc/localtime")
+        .to_str()
+        .expect("failed to convert /etc/localtime to str")
+        .to_string();
+
+    let tz = tz.split('/').collect::<Vec<&str>>();
+    let tz = tz[tz.len() - 2 .. tz.len()].join("/");
+    let tz: chrono_tz::Tz = tz.parse().unwrap();
 
     tz
 }
