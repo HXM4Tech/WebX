@@ -4,5 +4,5 @@ if [ $1 != "remove" ]; then
     exit 0
 fi
 
-systemctl stop --now webx@\* --all
+systemctl stop --now webx@\* --all || /bin/true
 find -L /etc/systemd/ -samefile /lib/systemd/system/webx@.service -delete

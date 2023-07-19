@@ -1,6 +1,6 @@
 post_install() {
         setcap CAP_NET_ADMIN+eip /usr/bin/webxd
-        systemctl daemon-reload
+        systemctl daemon-reload || /bin/true
 
         printf "\n"
         printf "\033[32;1mWebX has been installed successfully!\033[0m\n"
@@ -12,15 +12,15 @@ post_install() {
 
 post_upgrade() {
         setcap CAP_NET_ADMIN+eip /usr/bin/webxd
-        systemctl daemon-reload
-        systemctl restart webx@\* --all
+        systemctl daemon-reload || /bin/true
+        systemctl restart webx@\* --all || /bin/true
 }
 
 pre_remove() {
-        systemctl stop --now webx@\* --all
+        systemctl stop --now webx@\* --all || /bin/true
         find -L /etc/systemd/ -samefile /usr/lib/systemd/system/webx@.service -delete
 }
 
 post_remove() {
-        systemctl daemon-reload
+        systemctl daemon-reload || /bin/true
 }
