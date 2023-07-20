@@ -228,7 +228,7 @@ async fn main() {
 
                 match std::process::Command::new("chown")
                     .arg(format!("{user_uid}:{user_gid}"))
-                    .arg(&format!("{home_dir}/.config/webx/wallet"))
+                    .arg(format!("{home_dir}/.config/webx/wallet"))
                     .spawn()
                 {
                     Ok(mut child) => match child.wait() {
@@ -265,7 +265,7 @@ async fn main() {
     });
 
     log_ok!("TUN interface has been set up!");
-    log_info!("The interface has name: {}", tun_if.name());
+    log_info!("The interface has a name: {}", tun_if.name());
 
     let peers_tree: Arc<RwLock<p2p_network::PeerTree>> =
         Arc::new(RwLock::new(p2p_network::PeerTree::new(wlt.ipv6)));

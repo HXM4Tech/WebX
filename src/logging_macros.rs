@@ -1,8 +1,16 @@
+macro_rules! now {
+    () => {
+        chrono::Local::now()
+            .format("%Y-%m-%d %H:%M:%S UTC%:z")
+            .to_string()
+    };
+}
+
 #[macro_export]
 macro_rules! log_info {
     ($($arg:tt)*) => ({
         use colored::Colorize;
-        eprintln!("{} {}", "[INFO]".cyan().bold(), format!($($arg)*).cyan());
+        eprintln!("{} {} {}", now!().dimmed(), "[INFO]".cyan().bold(), format!($($arg)*).cyan());
     })
 }
 
@@ -10,7 +18,7 @@ macro_rules! log_info {
 macro_rules! log_warn {
     ($($arg:tt)*) => ({
         use colored::Colorize;
-        eprintln!("{} {}", "[WARN]".yellow().bold(), format!($($arg)*).yellow());
+        eprintln!("{} {} {}", now!().dimmed(), "[WARN]".yellow().bold(), format!($($arg)*).yellow());
     })
 }
 
@@ -18,7 +26,7 @@ macro_rules! log_warn {
 macro_rules! log_ok {
     ($($arg:tt)*) => ({
         use colored::Colorize;
-        eprintln!("{} {}", "[ OK ]".green().bold(), format!($($arg)*).green());
+        eprintln!("{} {} {}", now!().dimmed(), "[ OK ]".green().bold(), format!($($arg)*).green());
     })
 }
 
@@ -26,6 +34,6 @@ macro_rules! log_ok {
 macro_rules! log_error {
     ($($arg:tt)*) => ({
         use colored::Colorize;
-        eprintln!("{} {}", "[ERROR]".red().bold(), format!($($arg)*).red());
+        eprintln!("{} {} {}", now!().dimmed(), "[ERROR]".red().bold(), format!($($arg)*).red());
     })
 }

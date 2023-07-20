@@ -1,7 +1,7 @@
 #!/bin/sh
 
 setcap CAP_NET_ADMIN+eip /usr/bin/webxd
-systemctl daemon-reload || /bin/true
+systemctl daemon-reload 2> /dev/null || /bin/true
 
 if [ -z "$2" ]; then
     printf "\n"
@@ -11,5 +11,5 @@ if [ -z "$2" ]; then
     printf "User provided as argument will, along with root, have access to WebX CLI (command 'webx-cli')\n"
     printf "\n"
 else
-    systemctl restart webx@\* --all || /bin/true
+    systemctl restart webx@\* --all 2> /dev/null || /bin/true
 fi

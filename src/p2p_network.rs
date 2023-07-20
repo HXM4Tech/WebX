@@ -10,7 +10,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 use xxhash_rust::xxh3::xxh3_128;
 
-const MAX_PEER_TREE_DEPTH: u8 = 3;
+const MAX_PEER_TREE_DEPTH: u8 = 5;
 const MAX_CONNECTED_PEERS: usize = 8;
 
 fn socketaddr_formatter(socketaddr: std::net::SocketAddr) -> String {
@@ -131,7 +131,7 @@ impl PeerTree {
                 if route.len() == 1 {
                     return (route, PeerTreeRouteDest::Exact);
                 }
-                
+
                 shortest_route = route;
             } else if route_type == PeerTreeRouteDest::SameCountry
                 && (shortest_route_same_country.is_empty()

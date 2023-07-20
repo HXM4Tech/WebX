@@ -6,7 +6,7 @@ pub fn get_tz() -> chrono_tz::Tz {
         .to_string();
 
     let tz = tz.split('/').collect::<Vec<&str>>();
-    let tz = tz[tz.len() - 2 .. tz.len()].join("/");
+    let tz = tz[tz.len() - 2..tz.len()].join("/");
     let tz: chrono_tz::Tz = tz.parse().unwrap();
 
     tz
