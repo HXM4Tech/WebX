@@ -1138,8 +1138,6 @@ pub async fn p2p_job(
         }
     } else {
         log_warn!("(P2P) Server disabled in config file");
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(1000)).await;
-        }
+        std::future::pending::<()>().await;
     }
 }

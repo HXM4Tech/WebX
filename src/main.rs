@@ -1,9 +1,5 @@
 use colored::Colorize;
 use serde::{Deserialize, Deserializer};
-use signal_hook::{
-    consts::{SIGINT, SIGTERM},
-    iterator::Signals,
-};
 use std::collections::HashMap;
 use std::net::Ipv6Addr;
 use std::process;
@@ -92,21 +88,18 @@ where
 fn setup() {
     std::panic::set_hook(Box::new(panic_hook));
 
-    let mut signals = Signals::new([SIGINT, SIGTERM]).unwrap();
-    tokio::task::spawn_blocking(move || {
-        for signal in signals.forever() {
-            match signal {
-                SIGINT => {
-                    eprintln!("\n{}", "SIGINT received, exiting...".yellow().bold());
-                }
-                SIGTERM => {
-                    eprintln!("\n{}", "SIGTERM received, exiting...".yellow().bold());
-                }
-                _ => unreachable!(),
-            }
+    tokio::task::spawn(async move {
+        use tokio::signal::unix::{signal, SignalKind};
 
-            process::exit(0);
+        let mut sigterm = signal(SignalKind::terminate()).unwrap();
+        let mut sigint = signal(SignalKind::interrupt()).unwrap();
+
+        tokio::select! {
+            _ = sigterm.recv() => eprintln!("\n{}", "SIGTERM received, exiting...".yellow().bold()),
+            _ = sigint.recv() => eprintln!("\n{}", "SIGINT received, exiting...".yellow().bold()),
         }
+
+        process::exit(0);
     });
 }
 
