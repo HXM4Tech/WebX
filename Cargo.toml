@@ -9,7 +9,7 @@ edition = "2021"
 [dependencies]
 caps = "0.5.5"
 chrono = { version = "0.4.26", features = [] }
-chrono-tz = { version = "0.8.3", features = [] }
+chrono-tz = { version = "0.9.0", features = [] }
 colored = "2.0.0"
 generic-array = "0.14.7"
 hex = "0.4.3"
