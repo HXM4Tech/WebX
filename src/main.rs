@@ -148,11 +148,34 @@ async fn main() {
 
     let (home_dir, user_uid) = {
         use users::os::unix::UserExt;
-        let sudo_user = std::env::var("SUDO_USER").ok();
+        let mut sudo_user = std::env::var("SUDO_USER").ok();
+
+        // check for --sudo-is-root flag
+        let sudo_is_root = std::env::args().any(|arg| arg == "--sudo-is-root");
+
+        if sudo_is_root {
+            if sudo_user.is_none() {
+                log_warn!(
+                    "The --sudo-is-root flag was passed, but daemon was not started with `sudo`. Ignoring the flag."
+                );
+            }
+
+            sudo_user = None; // fall back to root's home directory and uid
+        }
 
         match sudo_user {
             Some(sudo_user) => {
                 let u = users::get_user_by_name(&sudo_user).unwrap();
+
+                log_warn!(
+                    "WebX daemon was started with `sudo`. This is not recommended; consider using libcap-ng to grant the binary CAP_NET_ADMIN instead."
+                );
+
+                log_warn!(
+                    "The configuration and wallet of user `{}` will be used instead of root. To load root's configuration and wallet, pass `--sudo-is-root` to the command line.",
+                    sudo_user
+                );
+
                 (u.home_dir().display().to_string(), u.uid())
             }
             None => {
@@ -165,12 +188,12 @@ async fn main() {
     let (peer_config, wlt) = {
         use std::io::Read;
 
-        let mut config_file_path = format!("{home_dir}/.config/webx/config.toml");
+        let mut config_file_path = format!("{home_dir}/.webx/config.toml");
 
         // if config file doesn't exist, get a copy from /etc/webx/config.toml
         if !std::path::Path::new(&config_file_path).exists() {
-            if std::fs::create_dir_all(format!("{home_dir}/.config/webx")).is_err() {
-                log_error!("Failed to create ~/.config/webx directory!");
+            if std::fs::create_dir_all(format!("{home_dir}/.webx")).is_err() {
+                log_error!("Failed to create ~/.webx directory!");
                 process::exit(1);
             }
 
@@ -185,10 +208,10 @@ async fn main() {
 
         match toml::from_str::<Config>(&config_str) {
             Ok(c) => {
-                // load a wallet from ~/.config/webx/wallet
+                // load a wallet from ~/.webx/wallet
                 // or generate a new one if it doesn't exist and save it
                 let wlt =
-                    match wallet::Wallet::from_file(&format!("{home_dir}/.config/webx/wallet")) {
+                    match wallet::Wallet::from_file(&format!("{home_dir}/.webx/wallet")) {
                         Ok(wlt) => {
                             log_ok!("Wallet has been loaded!");
                             wlt
@@ -196,7 +219,7 @@ async fn main() {
                         Err(_) => {
                             let wlt = wallet::Wallet::new();
                             log_warn!("New wallet has been generated!");
-                            wlt.save_to_file(&format!("{home_dir}/.config/webx/wallet"))
+                            wlt.save_to_file(&format!("{home_dir}/.webx/wallet"))
                                 .unwrap_or_else(|e| {
                                     log_error!("Cannot save wallet to file: {e}");
                                     process::exit(1);
@@ -207,12 +230,12 @@ async fn main() {
 
                 use std::os::unix::fs::PermissionsExt;
 
-                let mut perms = std::fs::metadata(format!("{home_dir}/.config/webx/wallet"))
+                let mut perms = std::fs::metadata(format!("{home_dir}/.webx/wallet"))
                     .unwrap()
                     .permissions();
 
                 perms.set_mode(0o600);
-                std::fs::set_permissions(format!("{home_dir}/.config/webx/wallet"), perms)
+                std::fs::set_permissions(format!("{home_dir}/.webx/wallet"), perms)
                     .unwrap_or_else(|e| {
                         log_error!("Cannot set permissions on wallet file: {e}");
                     });
@@ -221,7 +244,7 @@ async fn main() {
 
                 match std::process::Command::new("chown")
                     .arg(format!("{user_uid}:{user_gid}"))
-                    .arg(format!("{home_dir}/.config/webx/wallet"))
+                    .arg(format!("{home_dir}/.webx/wallet"))
                     .spawn()
                 {
                     Ok(mut child) => match child.wait() {
