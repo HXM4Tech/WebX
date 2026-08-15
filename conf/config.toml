@@ -1,5 +1,5 @@
 # WebX daemon configuration file
-# Note that this file can be overriden by ~/.config/webx/webx.conf in the user's home directory
+# Note that this file can be overriden by ~/.webx/config.toml in the user's home directory
 
 # Disable the server by setting this to false if you want to connect only as a client
 # this is useful when you are behind a NAT and you can't open the port

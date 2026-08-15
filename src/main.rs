@@ -189,7 +189,7 @@ async fn main() {
 
         let mut config_file_path = format!("{home_dir}/.webx/config.toml");
 
-        // if config file doesn't exist, get a copy from /etc/webx/config.toml
+        // if config file doesn't exist, load from /etc/webx/config.toml
         if !std::path::Path::new(&config_file_path).exists() {
             if std::fs::create_dir_all(format!("{home_dir}/.webx")).is_err() {
                 log_error!("Failed to create ~/.webx directory!");
