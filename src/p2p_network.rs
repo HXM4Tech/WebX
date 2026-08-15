@@ -1,7 +1,6 @@
 use crate::tun::TunKanal;
 use crate::wallet;
 use crate::STATS;
-use generic_array::GenericArray;
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use std::collections::HashMap;
 use std::net::Ipv6Addr;
@@ -374,8 +373,7 @@ impl PacketForP2P {
     }
 
     pub fn verify(&self) -> bool {
-        let signature_generic_array = GenericArray::from_slice(&self.signature);
-        let Ok(signature) = Signature::from_bytes(signature_generic_array) else { return false; };
+        let Ok(signature) = Signature::from_slice(&self.signature) else { return false; };
         let Some(recovery_id) = RecoveryId::from_byte(self.recid >> 6) else { return false; };
 
         let prehash = xxh3_128(&self.ipv6_packet).to_be_bytes();
@@ -479,10 +477,9 @@ async fn server(
 
             // verify their hello message signature
             {
-                let hello_signature = GenericArray::from_slice(&their_hello_msg[16..80]);
                 let hello_recid = their_hello_msg[80];
 
-                let Ok(hello_signature) = Signature::from_bytes(hello_signature) else {
+                let Ok(hello_signature) = Signature::from_slice(&their_hello_msg[16..80]) else {
                     let _ = stream.write_u8(MsgType::Disconnect as u8).await;
                     log_error!("(P2P) Connection from {} rejected, authorization failed", socketaddr_formatter(source));
                     return;
@@ -685,10 +682,9 @@ async fn client(
 
     // verify their hello message signature
     {
-        let hello_signature = GenericArray::from_slice(&their_hello_msg[16..80]);
         let hello_recid = their_hello_msg[80];
 
-        let Ok(hello_signature) = Signature::from_bytes(hello_signature) else {
+        let Ok(hello_signature) = Signature::from_slice(&their_hello_msg[16..80]) else {
             let _ = stream.write_u8(MsgType::Disconnect as u8).await;
             if !reconnecting {
                 log_error!("(P2P) Connection with {} cannot be enstabilished, authorization failed", socketaddr_formatter(server_addr));

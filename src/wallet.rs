@@ -1,8 +1,14 @@
-use generic_array::GenericArray;
 use k256::ecdsa::{
-    signature::hazmat::RandomizedPrehashSigner, RecoveryId, Signature, SigningKey, VerifyingKey,
+    signature::hazmat::RandomizedPrehashSigner,
+    RecoveryId,
+    Signature,
+    SigningKey,
+    VerifyingKey
 };
-use rand_core::OsRng;
+
+use k256::elliptic_curve::Generate;
+use getrandom::{SysRng, rand_core::UnwrapErr};
+
 use std::net::Ipv6Addr;
 use xxhash_rust::xxh3::xxh3_128;
 
@@ -17,7 +23,7 @@ pub struct Wallet {
 
 impl Wallet {
     pub fn new() -> Self {
-        let private_key = SigningKey::random(&mut OsRng);
+        let private_key = SigningKey::generate_from_rng(&mut UnwrapErr(SysRng));
 
         let private_key_clone = private_key.clone();
         let public_key = private_key_clone.verifying_key();
@@ -45,22 +51,20 @@ impl Wallet {
                 // pick the 3 first bytes of the file - the timezone and country code, where the wallet was generated
                 tz_cc.copy_from_slice(&private_key_file[0..3]);
 
-                let bytes_generic_array = GenericArray::from_slice(&private_key_file[3..]);
-
-                if let Ok(sk) = SigningKey::from_bytes(bytes_generic_array) {
+                if let Ok(sk) = SigningKey::from_slice(&private_key_file[3..]) {
                     sk
                 } else {
                     log_error!("Cannot parse private key from file");
                     log_warn!("New wallet has been generated!");
                     new_priv_key = true;
-                    SigningKey::random(&mut OsRng)
+                    SigningKey::generate_from_rng(&mut UnwrapErr(SysRng))
                 }
             }
             Err(e) => {
                 log_error!("Cannot read private key file: {}", e);
                 log_warn!("New wallet has been generated!");
                 new_priv_key = true;
-                SigningKey::random(&mut OsRng)
+                SigningKey::generate_from_rng(&mut UnwrapErr(SysRng))
             }
         };
 
@@ -126,7 +130,7 @@ impl Wallet {
         let prehash = xxh3_128(message).to_be_bytes();
         let sig = self
             .private_key
-            .sign_prehash_with_rng(&mut OsRng, &prehash)
+            .sign_prehash_with_rng(&mut UnwrapErr(SysRng), &prehash)
             .unwrap();
         let recid =
             RecoveryId::trial_recovery_from_prehash(&self.public_key, &prehash, &sig).unwrap();

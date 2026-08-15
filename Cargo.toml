@@ -1,28 +1,27 @@
 [package]
 name = "webx"
-description = "A Peer-to-Peer VPN service with internal IPv6 addresses and packet verification."
+description = "A decentralized P2P overlay network with cryptographic IPv6 addressing and source verification"
 version = "0.1.0"
-authors = ["Krzysztof Stefańczyk <krzysztof.stefanczyk@hxm4tech.tk>"]
+authors = ["Krzysztof Stefańczyk <krzys.stefanczyk@gmail.com>"]
 license = "MIT"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-caps = "0.5.5"
-chrono = { version = "0.4.26", features = [] }
-chrono-tz = { version = "0.8.3", features = [] }
-colored = "2.0.0"
-generic-array = "0.14.7"
+caps = "0.5.6"
+chrono = { version = "0.4.45", features = [] }
+chrono-tz = { version = "0.10.4", features = [] }
+colored = "3.1.1"
+getrandom = { version = "0.4.3", features = ["sys_rng"] }
 hex = "0.4.3"
-k256 = "0.13.1"
-kanal = "0.1.0-pre8"
-lazy_static = "1.4.0"
-rand_core = "0.6.4"
-serde = { version = "1.0.171", features = ["derive"] }
-tokio = { version = "1.29.1", features = ["net", "sync", "time", "macros", "io-util", "rt-multi-thread", "signal"] }
-toml = "0.8.2"
-tun-tap = "0.1.3"
+k256 = "0.14.0"
+kanal = "0.1.1"
+lazy_static = "1.5.0"
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.53.1", features = ["net", "sync", "time", "macros", "io-util", "rt-multi-thread", "signal"] }
+toml = "1.1.4"
+tun-tap = "0.1.4"
 users = { version = "0.11.0", features = [] }
-xxhash-rust = { version = "0.8.6", features = ["xxh3"] }
+xxhash-rust = { version = "0.8.18", features = ["xxh3"] }
 
 [profile.release]
 opt-level = 3

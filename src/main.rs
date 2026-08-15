@@ -18,7 +18,7 @@ mod p2p_network;
 mod tun;
 mod wallet;
 
-const PSEUDOROUTER_ADDR: [u8; 16] = [
+const LOOPBACK_ADDR: [u8; 16] = [
     wallet::IPV6_PREFIX,
     0,
     0,
@@ -37,7 +37,7 @@ const PSEUDOROUTER_ADDR: [u8; 16] = [
     1,
 ];
 
-fn panic_hook(info: &core::panic::PanicInfo) {
+fn panic_hook(info: &std::panic::PanicHookInfo) {
     eprintln!(
         "{} {}",
         "Fatal error:".red().bold(),
@@ -288,9 +288,9 @@ async fn main() {
                     continue;
                 }
 
-                if dst == PSEUDOROUTER_ADDR {
+                if dst == LOOPBACK_ADDR {
                     packet[24..40].copy_from_slice(&wlt.ipv6.octets());
-                    packet[8..24].copy_from_slice(&PSEUDOROUTER_ADDR);
+                    packet[8..24].copy_from_slice(&LOOPBACK_ADDR);
 
                     let result = tun_channel.send(packet).await;
                     if result.is_err() {
