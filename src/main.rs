@@ -13,7 +13,6 @@ extern crate lazy_static;
 mod logging_macros;
 
 mod cli_socket;
-mod loc;
 mod p2p_network;
 mod tun;
 mod wallet;

@@ -7,7 +7,7 @@ use std::net::Ipv6Addr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
-use xxhash_rust::xxh3::xxh3_128;
+use blake3::Hasher;
 
 const MAX_PEER_TREE_DEPTH: u8 = 5;
 const MAX_CONNECTED_PEERS: usize = 8;
@@ -376,7 +376,9 @@ impl PacketForP2P {
         let Ok(signature) = Signature::from_slice(&self.signature) else { return false; };
         let Some(recovery_id) = RecoveryId::from_byte(self.recid >> 6) else { return false; };
 
-        let prehash = xxh3_128(&self.ipv6_packet).to_be_bytes();
+        let mut hasher = Hasher::new();
+        hasher.update(&self.ipv6_packet);
+        let prehash = hasher.finalize().as_slice().to_owned();
 
         // recover the public key from the signature and recid
         let Ok(public_key) = VerifyingKey::recover_from_prehash(
@@ -398,7 +400,7 @@ impl PacketForP2P {
             return false;
         }
 
-        self.ipv6_packet[12..24] == wallet::Wallet::generate_ipv6_hash_part(&public_key_bytes)
+        self.ipv6_packet[10..24] == wallet::Wallet::generate_ipv6_hash_part(&public_key_bytes)
     }
 
     pub fn into_ipv6_packet(mut self) -> Vec<u8> {
@@ -490,7 +492,9 @@ async fn server(
                     return;
                 };
 
-                let prehash = xxh3_128(b"hello").to_be_bytes();
+                let mut hasher = Hasher::new();
+                hasher.update(b"hello");
+                let prehash = hasher.finalize().as_slice().to_owned();
 
                 let Ok(their_public_key) = VerifyingKey::recover_from_prehash(
                     &prehash,
@@ -541,7 +545,7 @@ async fn server(
 
                 let our_pubkey_bytes = handler_wallet.public_key.to_sec1_bytes();
 
-                // algorith to embed checksum in recid
+                // algorithm to embed checksum in recid
                 let mut checksum = 0;
                 for i in 0..32 {
                     checksum ^= our_pubkey_bytes[i];
@@ -641,7 +645,7 @@ async fn client(
 
         let our_pubkey_bytes = our_wallet.public_key.to_sec1_bytes();
 
-        // algorith to embed checksum in recid
+        // algorithm to embed checksum in recid
         let mut checksum = 0;
         for i in 0..32 {
             checksum ^= our_pubkey_bytes[i];
@@ -699,7 +703,9 @@ async fn client(
             return Err("Auth failed".into());
         };
 
-        let prehash = xxh3_128(b"hello").to_be_bytes();
+        let mut hasher = Hasher::new();
+        hasher.update(b"hello");
+        let prehash = hasher.finalize().as_slice().to_owned();
 
         let Ok(their_public_key) = VerifyingKey::recover_from_prehash(
             &prehash,

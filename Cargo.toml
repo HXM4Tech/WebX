@@ -7,9 +7,9 @@ license = "MIT"
 edition = "2024"
 
 [dependencies]
+blake3 = "1.8.6"
 caps = "0.5.6"
 chrono = { version = "0.4.45", features = [] }
-chrono-tz = { version = "0.10.4", features = [] }
 colored = "3.1.1"
 getrandom = { version = "0.4.3", features = ["sys_rng"] }
 hex = "0.4.3"
@@ -21,7 +21,6 @@ tokio = { version = "1.53.1", features = ["net", "sync", "time", "macros", "io-u
 toml = "1.1.4"
 tun-tap = "0.1.4"
 users = { version = "0.11.0", features = [] }
-xxhash-rust = { version = "0.8.18", features = ["xxh3"] }
 
 [profile.release]
 opt-level = 3
