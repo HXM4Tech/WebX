@@ -400,7 +400,7 @@ impl PacketForP2P {
             return false;
         }
 
-        self.ipv6_packet[10..24] == wallet::Wallet::generate_ipv6_hash_part(&public_key_bytes)
+        self.ipv6_packet[9..24] == wallet::Wallet::generate_ipv6_hash_part(&public_key_bytes)
     }
 
     pub fn into_ipv6_packet(mut self) -> Vec<u8> {
@@ -525,8 +525,8 @@ async fn server(
                 }
 
                 // check if their public key matches their WebX IPv6 address
-                if their_webx_ipv6.octets()[4..16]
-                    != wallet::Wallet::generate_ipv6(&their_public_key).octets()[4..16]
+                if their_webx_ipv6.octets()[1..16]
+                    != wallet::Wallet::generate_ipv6(&their_public_key).octets()[1..16]
                 {
                     let _ = stream.write_u8(MsgType::Disconnect as u8).await;
                     log_error!(
@@ -740,8 +740,8 @@ async fn client(
         }
 
         // check if their public key matches their WebX IPv6 address
-        if their_webx_ipv6.octets()[4..16]
-            != wallet::Wallet::generate_ipv6(&their_public_key).octets()[4..16]
+        if their_webx_ipv6.octets()[1..16]
+            != wallet::Wallet::generate_ipv6(&their_public_key).octets()[1..16]
         {
             let _ = stream.write_u8(MsgType::Disconnect as u8).await;
             if !reconnecting {

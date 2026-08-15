@@ -89,12 +89,12 @@ impl Wallet {
         std::fs::write(path, to_save)
     }
 
-    pub fn generate_ipv6_hash_part(public_key: &[u8]) -> [u8; 14] {
+    pub fn generate_ipv6_hash_part(public_key: &[u8]) -> [u8; 15] {
         let mut hasher = Hasher::new();
         hasher.update(public_key);
         let mut hash = hasher.finalize_xof();
 
-        let mut res = [0u8; 14];
+        let mut res = [0u8; 15];
         hash.fill(&mut res);
         res
     }
@@ -103,7 +103,7 @@ impl Wallet {
         let mut ipv6 = [0u8; 16];
 
         ipv6[0] = IPV6_PREFIX;
-        ipv6[2..16].copy_from_slice(&Self::generate_ipv6_hash_part(&public_key.to_sec1_bytes()));
+        ipv6[1..16].copy_from_slice(&Self::generate_ipv6_hash_part(&public_key.to_sec1_bytes()));
 
         Ipv6Addr::from(ipv6)
     }
