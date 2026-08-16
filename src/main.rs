@@ -283,7 +283,7 @@ async fn main() {
     log_info!("The interface has a name: {}", tun_if.name());
 
     let neighbors_db: Arc<RwLock<p2p_network::NeighborsDb>> =
-        Arc::new(RwLock::new(p2p_network::NeighborsDb::new()));
+        Arc::new(RwLock::new(p2p_network::NeighborsDb::new(wlt.ipv6)));
 
     let send_queue: Arc<RwLock<HashMap<SocketAddr, kanal::AsyncSender<p2p_network::PacketForP2P>>>> =
         Arc::new(RwLock::new(HashMap::new()));

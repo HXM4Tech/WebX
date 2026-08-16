@@ -39,30 +39,18 @@ impl Neighbor {
             socketaddr,
         }
     }
-
-    fn xor_distance(&self, other_webx_ipv6: Ipv6Addr) -> u128 {
-        let self_bytes = self.webx_ipv6.octets();
-        let other_bytes = other_webx_ipv6.octets();
-
-        let mut distance = 0u128;
-
-        for i in 0..16 {
-            distance <<= 8;
-            distance |= (self_bytes[i] ^ other_bytes[i]) as u128;
-        }
-
-        distance
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NeighborsDb {
+    pub our_webx_ipv6: Ipv6Addr,
     pub neighbors: Vec<Neighbor>
 }
 
 impl NeighborsDb {
-    pub fn new() -> Self {
+    pub fn new(our_webx_ipv6: Ipv6Addr) -> Self {
         Self {
+            our_webx_ipv6,
             neighbors: Vec::new(),
         }
     }
@@ -93,18 +81,22 @@ impl NeighborsDb {
 
     pub fn get_sockaddr_to_route_to(&self, webx_ipv6: Ipv6Addr) -> SocketAddr {
         let mut closest_neighbor: Option<&Neighbor> = None;
-        let mut closest_distance: Option<u128> = None;
+        let mut closest_distance: u128 = u128::MAX;
 
         for neighbor in self.neighbors.iter() {
-            let distance = neighbor.xor_distance(webx_ipv6);
+            let distance = Self::xor_distance(neighbor.webx_ipv6, webx_ipv6);
 
-            if closest_distance.map_or(true, |d| d > distance) {
-                closest_distance = Some(distance);
+            if closest_distance > distance {
+                closest_distance = distance;
                 closest_neighbor = Some(neighbor);
             }
         }
 
-        closest_neighbor.map(|n| n.socketaddr).unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)))
+        if Self::xor_distance(self.our_webx_ipv6, webx_ipv6) < closest_distance {
+            return SocketAddr::from(([0, 0, 0, 0], 0));
+        }
+
+        closest_neighbor.map(|n| n.socketaddr).unwrap()
     }
 
     pub fn get_neighbors_hashmap(&self) -> HashMap<Ipv6Addr, SocketAddr> {
@@ -115,6 +107,20 @@ impl NeighborsDb {
         }
 
         known_peers
+    }
+
+    fn xor_distance(a1: Ipv6Addr, a2: Ipv6Addr) -> u128 {
+        let a1_bytes = a1.octets();
+        let a2_bytes = a2.octets();
+
+        let mut distance = 0u128;
+
+        for i in 0..16 {
+            distance <<= 8;
+            distance |= (a1_bytes[i] ^ a2_bytes[i]) as u128;
+        }
+
+        distance
     }
 }
 

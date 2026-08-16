@@ -12,7 +12,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::net::Ipv6Addr;
 use blake3::Hasher;
 
-pub const IPV6_PREFIX: u8 = 0x4c;
+pub const IPV6_PREFIX: u8 = 0xd4;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Wallet {

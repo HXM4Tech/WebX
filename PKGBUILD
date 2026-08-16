@@ -1,5 +1,5 @@
-# Maintainer: Krzysztof Stefańczyk <krzysztof.stefanczyk@hxm4tech.tk>
-# Contributor: Krzysztof Stefańczyk <krzysztof.stefanczyk@hxm4tech.tk>
+# Maintainer: Krzysztof Stefańczyk <krzys.stefanczyk@gmail.com>
+# Contributor: Krzysztof Stefańczyk <krzys.stefanczyk@gmail.com>
 
 pkgname=webx
 pkgver=$(grep -m1 "version" Cargo.toml | cut -d '"' -f2)
