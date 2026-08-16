@@ -3,21 +3,20 @@ use crate::wallet;
 use crate::STATS;
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use std::collections::HashMap;
-use std::net::Ipv6Addr;
+use std::net::{Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 use blake3::Hasher;
 
-const MAX_PEER_TREE_DEPTH: u8 = 5;
 const MAX_CONNECTED_PEERS: usize = 8;
 
-fn socketaddr_formatter(socketaddr: std::net::SocketAddr) -> String {
+pub fn socketaddr_formatter(socketaddr: SocketAddr) -> String {
     match socketaddr {
-        std::net::SocketAddr::V4(socketaddr) => {
+        SocketAddr::V4(socketaddr) => {
             format!("{}:{}", socketaddr.ip(), socketaddr.port())
         }
-        std::net::SocketAddr::V6(socketaddr) => {
+        SocketAddr::V6(socketaddr) => {
             if let Some(ipv4) = socketaddr.ip().to_ipv4_mapped() {
                 return format!("{}:{}", ipv4, socketaddr.port());
             }
@@ -27,278 +26,97 @@ fn socketaddr_formatter(socketaddr: std::net::SocketAddr) -> String {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum PeerTreeRouteDest {
-    Exact,
-    SameCountry,
-    SameTimezone,
-    NoRoute,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Neighbor {
+    pub webx_ipv6: Ipv6Addr,
+    pub socketaddr: SocketAddr,
 }
 
-#[derive(Clone, Debug)] // PartialEq and Eq are manually implemented (only ipv6 is compared)
-pub struct PeerTree {
-    pub ipv6: Ipv6Addr,
-    pub connected_peers: Vec<PeerTree>,
-    pub level: u8,
-}
-
-impl PeerTree {
-    pub fn new(ipv6: Ipv6Addr) -> Self {
+impl Neighbor {
+    pub fn new(webx_ipv6: Ipv6Addr, socketaddr: SocketAddr) -> Self {
         Self {
-            ipv6,
-            connected_peers: Vec::new(),
-            level: 0,
+            webx_ipv6,
+            socketaddr,
         }
     }
 
-    fn align_level(&mut self, our_level: u8) -> bool {
-        self.level = our_level;
+    fn xor_distance(&self, other_webx_ipv6: Ipv6Addr) -> u128 {
+        let self_bytes = self.webx_ipv6.octets();
+        let other_bytes = other_webx_ipv6.octets();
 
-        if our_level > MAX_PEER_TREE_DEPTH {
-            return false;
+        let mut distance = 0u128;
+
+        for i in 0..16 {
+            distance <<= 8;
+            distance |= (self_bytes[i] ^ other_bytes[i]) as u128;
         }
 
-        if our_level == MAX_PEER_TREE_DEPTH {
-            self.connected_peers.clear();
-            return true;
-        }
+        distance
+    }
+}
 
-        for peer in self.connected_peers.iter_mut() {
-            let _ = peer.align_level(our_level + 1);
-        }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NeighborsDb {
+    pub neighbors: Vec<Neighbor>
+}
 
-        true
+impl NeighborsDb {
+    pub fn new() -> Self {
+        Self {
+            neighbors: Vec::new(),
+        }
     }
 
-    pub fn register_peer(&mut self, mut peer: PeerTree) -> Result<(), &str> {
-        if self.connected_peers.len() >= MAX_CONNECTED_PEERS {
+    pub fn register_neighbor(&mut self, neighbor: Neighbor) -> Result<(), &str> {
+        if self.neighbors.len() >= MAX_CONNECTED_PEERS {
             return Err("Max connected peers reached");
         }
 
-        if self.connected_peers.contains(&peer) {
-            return Err("Peer already connected");
+        if self.neighbors.contains(&neighbor) {
+            return Err("Neighbor already registered");
         }
 
-        if peer.align_level(self.level + 1) {
-            peer.unregister_peer_from_all_levels(self.ipv6);
-            self.connected_peers.push(peer);
-        }
-
+        self.neighbors.push(neighbor);
         Ok(())
     }
 
-    pub fn unregister_peer(&mut self, ipv6: Ipv6Addr) -> Result<(), &str> {
-        let index = self.connected_peers.iter().position(|x| x.ipv6 == ipv6);
+    pub fn unregister_neighbor(&mut self, sockaddr: SocketAddr) -> Result<(), &str> {
+        let index = self.neighbors.iter().position(|x| x.socketaddr == sockaddr);
 
         if index.is_none() {
-            return Err("Peer not connected");
+            return Err("Neighbor not registered");
         }
 
-        self.connected_peers.remove(index.unwrap());
+        self.neighbors.remove(index.unwrap());
         Ok(())
     }
 
-    fn unregister_peer_from_all_levels(&mut self, ipv6: Ipv6Addr) {
-        self.unregister_peer(ipv6).ok().unwrap_or(());
+    pub fn get_sockaddr_to_route_to(&self, webx_ipv6: Ipv6Addr) -> SocketAddr {
+        let mut closest_neighbor: Option<&Neighbor> = None;
+        let mut closest_distance: Option<u128> = None;
 
-        for peer in self.connected_peers.iter_mut() {
-            peer.unregister_peer_from_all_levels(ipv6);
-        }
-    }
+        for neighbor in self.neighbors.iter() {
+            let distance = neighbor.xor_distance(webx_ipv6);
 
-    fn get_shortest_route_to_target(&self, ipv6: Ipv6Addr) -> (Vec<Ipv6Addr>, PeerTreeRouteDest) {
-        if let Some(peer) = self.connected_peers.iter().find(|x| x.ipv6 == ipv6) {
-            return (vec![peer.ipv6], PeerTreeRouteDest::Exact);
-        }
-
-        let mut shortest_route = Vec::new();
-        let mut shortest_route_same_country = Vec::new();
-        let mut shortest_route_same_time_zone = Vec::new();
-
-        for peer in self.connected_peers.iter() {
-            let (mut route, route_type) = peer.get_shortest_route_to_target(ipv6);
-
-            if route.is_empty() {
-                continue;
-            }
-
-            route.insert(0, peer.ipv6);
-
-            if route_type == PeerTreeRouteDest::Exact
-                && (shortest_route.is_empty() || route.len() < shortest_route.len())
-            {
-                if route.len() == 1 {
-                    return (route, PeerTreeRouteDest::Exact);
-                }
-
-                shortest_route = route;
-            } else if route_type == PeerTreeRouteDest::SameCountry
-                && (shortest_route_same_country.is_empty()
-                    || route.len() < shortest_route_same_country.len())
-            {
-                shortest_route_same_country = route;
-            } else if route_type == PeerTreeRouteDest::SameTimezone
-                && (shortest_route_same_time_zone.is_empty()
-                    || route.len() < shortest_route_same_time_zone.len())
-            {
-                shortest_route_same_time_zone = route;
+            if closest_distance.map_or(true, |d| d > distance) {
+                closest_distance = Some(distance);
+                closest_neighbor = Some(neighbor);
             }
         }
 
-        if !shortest_route.is_empty() {
-            return (shortest_route, PeerTreeRouteDest::Exact);
-        }
-
-        if let Some(peer) = self
-            .connected_peers
-            .iter()
-            .find(|x| x.ipv6.octets()[1..4] == ipv6.octets()[1..4])
-        {
-            return (vec![peer.ipv6], PeerTreeRouteDest::SameCountry);
-        }
-
-        if !shortest_route_same_country.is_empty() {
-            return (shortest_route_same_country, PeerTreeRouteDest::SameCountry);
-        }
-
-        if let Some(peer) = self
-            .connected_peers
-            .iter()
-            .find(|x| x.ipv6.octets()[1] == ipv6.octets()[1])
-        {
-            return (vec![peer.ipv6], PeerTreeRouteDest::SameTimezone);
-        }
-
-        if !shortest_route_same_time_zone.is_empty() {
-            return (
-                shortest_route_same_time_zone,
-                PeerTreeRouteDest::SameTimezone,
-            );
-        }
-
-        (Vec::new(), PeerTreeRouteDest::NoRoute)
+        closest_neighbor.map(|n| n.socketaddr).unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)))
     }
 
-    pub fn get_ipv6_to_route_to(&self, ipv6: Ipv6Addr) -> Ipv6Addr {
-        let (route, dest) = self.get_shortest_route_to_target(ipv6);
-
-        if dest == PeerTreeRouteDest::NoRoute {
-            if self.connected_peers.is_empty() {
-                return Ipv6Addr::UNSPECIFIED;
-            }
-
-            return self.connected_peers[0].ipv6;
-        }
-
-        route[0]
-    }
-
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
-
-        bytes.extend_from_slice(&self.ipv6.octets());
-        bytes.push(self.connected_peers.len() as u8);
-
-        for peer in self.connected_peers.iter() {
-            bytes.extend_from_slice(&peer.to_bytes());
-        }
-
-        bytes
-    }
-
-    pub fn get_size_as_bytes(&self) -> usize {
-        let mut size = 17;
-
-        for peer in self.connected_peers.iter() {
-            size += peer.get_size_as_bytes();
-        }
-
-        size
-    }
-
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        let mut ipv6_bytes = [0u8; 16];
-        ipv6_bytes.copy_from_slice(&bytes[0..16]);
-        let ipv6 = Ipv6Addr::from(ipv6_bytes);
-
-        let mut connected_peers = Vec::new();
-        let num_connected_peers = bytes[16];
-
-        let mut offset = 17;
-
-        for _ in 0..num_connected_peers {
-            let peer = PeerTree::from_bytes(&bytes[offset..]);
-            offset += peer.get_size_as_bytes();
-            connected_peers.push(peer);
-        }
-
-        let mut res = Self {
-            ipv6,
-            connected_peers,
-            level: 0,
-        };
-        let _ = res.align_level(0);
-
-        res
-    }
-
-    pub fn get_subtree(&self, ipv6: Ipv6Addr) -> Option<&Self> {
-        if self.ipv6 == ipv6 {
-            return Some(self);
-        }
-
-        for peer in self.connected_peers.iter() {
-            let subtree = peer.get_subtree(ipv6);
-
-            if subtree.is_some() {
-                return subtree;
-            }
-        }
-
-        None
-    }
-
-    pub fn get_subtree_mut(&mut self, ipv6: Ipv6Addr) -> Option<&mut Self> {
-        if self.ipv6 == ipv6 {
-            return Some(self);
-        }
-
-        for peer in self.connected_peers.iter_mut() {
-            let subtree = peer.get_subtree_mut(ipv6);
-
-            if subtree.is_some() {
-                return subtree;
-            }
-        }
-
-        None
-    }
-
-    pub fn get_known_peers(&self) -> HashMap<Ipv6Addr, u8> {
+    pub fn get_neighbors_hashmap(&self) -> HashMap<Ipv6Addr, SocketAddr> {
         let mut known_peers = HashMap::new();
 
-        for peer in self.connected_peers.iter() {
-            let mut peer_known_peers = peer.get_known_peers();
-            for (ipv6, level) in peer_known_peers.drain() {
-                if !known_peers.contains_key(&ipv6) || known_peers[&ipv6] > level {
-                    known_peers.insert(ipv6, level);
-                }
-            }
-
-            known_peers.insert(peer.ipv6, peer.level);
+        for peer in self.neighbors.iter() {
+            known_peers.insert(peer.webx_ipv6, peer.socketaddr);
         }
 
         known_peers
     }
 }
-
-impl PartialEq for PeerTree {
-    fn eq(&self, other: &Self) -> bool {
-        self.ipv6 == other.ipv6
-    }
-}
-
-impl Eq for PeerTree {}
 
 #[derive(Debug)]
 pub struct PacketForP2P {
@@ -416,12 +234,6 @@ enum MsgType {
     KeepAlive = 0,
     // PacketForP2P (variable length; no need to send lenght as it could be determinded from IPv6 header)
     Packet = 1,
-    // this one byte + lenght (4 bytes) + PeerTree (variable length)
-    FullPeerTree = 2,
-    // level (1 byte) + address (16 bytes)
-    NewPeerInTree = 3,
-    // level (1 byte) + address (16 bytes)
-    RemovePeerFromTree = 4,
 
     // just this one byte
     Disconnect = 254,
@@ -433,9 +245,6 @@ impl MsgType {
         match byte {
             0 => Self::KeepAlive,
             1 => Self::Packet,
-            2 => Self::FullPeerTree,
-            3 => Self::NewPeerInTree,
-            4 => Self::RemovePeerFromTree,
             254 => Self::Disconnect,
             _ => Self::Unknown,
         }
@@ -445,21 +254,19 @@ impl MsgType {
 async fn server(
     our_wallet: wallet::Wallet,
     port: u16,
-    tree: Arc<RwLock<PeerTree>>,
-    queue: Arc<RwLock<HashMap<Ipv6Addr, kanal::AsyncSender<PacketForP2P>>>>,
+    neighbors_db: Arc<RwLock<NeighborsDb>>,
+    queue: Arc<RwLock<HashMap<SocketAddr, kanal::AsyncSender<PacketForP2P>>>>,
     tun_channel: TunKanal,
-    routing_broadcast_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind((Ipv6Addr::UNSPECIFIED, port)).await?;
     log_ok!("(P2P) Server has started and is listening on port {}", port);
 
     loop {
         let (mut stream, source) = listener.accept().await.unwrap();
-        let handler_tree = tree.clone();
+        let handler_neighbors_db = neighbors_db.clone();
         let handler_queue = queue.clone();
         let handler_wallet = our_wallet.clone();
         let mut handler_tun_channel = tun_channel.clone();
-        let handler_routing_broadcast_tx = routing_broadcast_tx.clone();
 
         // SERVER
         tokio::task::spawn(async move {
@@ -566,14 +373,14 @@ async fn server(
                 }
             }
 
-            // add them to our peer tree
-            if (*handler_tree.write().await)
-                .register_peer(PeerTree::new(their_webx_ipv6))
+            // add them to our neighbor db
+            if (*handler_neighbors_db.write().await)
+                .register_neighbor(Neighbor::new(their_webx_ipv6, source))
                 .is_err()
             {
                 let _ = stream.write_u8(MsgType::Disconnect as u8).await;
                 log_error!(
-                    "(P2P) Connection with {} failed, cannot register in peer tree",
+                    "(P2P) Connection with {} failed, cannot register neighbor",
                     socketaddr_formatter(source)
                 );
                 return;
@@ -582,7 +389,7 @@ async fn server(
             // add them to our queue
             let (tx, rx) = kanal::unbounded_async();
 
-            handler_queue.write().await.insert(their_webx_ipv6, tx);
+            handler_queue.write().await.insert(source, tx);
 
             log_ok!(
                 "(P2P) Connected to {} with WebX IPv6 address {}",
@@ -594,12 +401,11 @@ async fn server(
                 source,
                 their_webx_ipv6,
                 &handler_wallet,
-                handler_tree,
+                handler_neighbors_db,
                 handler_queue,
                 rx,
                 &mut handler_tun_channel,
                 stream,
-                &handler_routing_broadcast_tx,
             )
             .await;
         });
@@ -608,14 +414,13 @@ async fn server(
 
 async fn client(
     our_wallet: &wallet::Wallet,
-    server_addr_vec: &[std::net::SocketAddr],
-    peers_tree: Arc<RwLock<PeerTree>>,
-    queue: Arc<RwLock<HashMap<Ipv6Addr, kanal::AsyncSender<PacketForP2P>>>>,
+    server_addr_vec: &[SocketAddr],
+    neighbors_db: Arc<RwLock<NeighborsDb>>,
+    queue: Arc<RwLock<HashMap<SocketAddr, kanal::AsyncSender<PacketForP2P>>>>,
     tun_channel: &mut TunKanal,
-    routing_broadcast_tx: &tokio::sync::broadcast::Sender<Vec<u8>>,
     reconnecting: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut server_addr = std::net::SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0);
+    let mut server_addr = SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0);
     let mut stream = None;
 
     for a in server_addr_vec {
@@ -755,8 +560,8 @@ async fn client(
     }
 
     // add them to our peer tree
-    if (*peers_tree.write().await)
-        .register_peer(PeerTree::new(their_webx_ipv6))
+    if (*neighbors_db.write().await)
+        .register_neighbor(Neighbor::new(their_webx_ipv6, server_addr))
         .is_err()
     {
         let _ = stream.write_u8(MsgType::Disconnect as u8).await;
@@ -771,7 +576,7 @@ async fn client(
 
     // add them to our queue
     let (tx, rx) = kanal::unbounded_async();
-    queue.write().await.insert(their_webx_ipv6, tx);
+    queue.write().await.insert(server_addr, tx);
 
     log_ok!(
         "(P2P) Connected to {} with WebX IPv6 address {}",
@@ -783,12 +588,11 @@ async fn client(
         server_addr,
         their_webx_ipv6,
         our_wallet,
-        peers_tree,
+        neighbors_db,
         queue,
         rx,
         tun_channel,
         stream,
-        routing_broadcast_tx,
     )
     .await;
 
@@ -797,34 +601,15 @@ async fn client(
 
 #[allow(clippy::too_many_arguments)]
 async fn handle_peer(
-    source: std::net::SocketAddr,
+    source: SocketAddr,
     their_webx_ipv6: Ipv6Addr,
     our_wallet: &wallet::Wallet,
-    peers_tree: Arc<RwLock<PeerTree>>,
-    queue: Arc<RwLock<HashMap<Ipv6Addr, kanal::AsyncSender<PacketForP2P>>>>,
+    neighbors_db: Arc<RwLock<NeighborsDb>>,
+    queue: Arc<RwLock<HashMap<SocketAddr, kanal::AsyncSender<PacketForP2P>>>>,
     queue_rx: kanal::AsyncReceiver<PacketForP2P>,
     tun_channel: &mut TunKanal,
     mut stream: tokio::net::TcpStream,
-    routing_broadcast_tx: &tokio::sync::broadcast::Sender<Vec<u8>>,
 ) {
-    // send our peer tree
-    {
-        let mut our_tree_msg = vec![MsgType::FullPeerTree as u8];
-        let tree_as_bytes = (*peers_tree.read().await).to_bytes();
-        our_tree_msg.extend_from_slice(&(tree_as_bytes.len() as u32).to_be_bytes());
-        our_tree_msg.extend_from_slice(&tree_as_bytes);
-
-        if stream.write_all(&our_tree_msg).await.is_err() {
-            log_error!(
-                "(P2P) Connection with {} failed",
-                socketaddr_formatter(source)
-            );
-            return; // do not send disconnect message as we can't write to stream
-        }
-    }
-
-    let mut routing_broadcast_rx = routing_broadcast_tx.subscribe();
-
     loop {
         tokio::select! {
             packet = queue_rx.recv() => {
@@ -833,26 +618,6 @@ async fn handle_peer(
                     msg.extend_from_slice(&packet.to_bytes());
 
                     if stream.write_all(&msg).await.is_err() {
-                        break;
-                    }
-                }
-            },
-            routing_info = routing_broadcast_rx.recv() => {
-                if let Ok(routing_info) = routing_info {
-                    let sender_addr: [u8; 16] = routing_info[1..17].try_into().unwrap();
-                    let peer_changed_addr: [u8; 16] = match MsgType::from_byte(routing_info[0]) {
-                        MsgType::NewPeerInTree => routing_info[21..37].try_into().unwrap(),
-                        MsgType::RemovePeerFromTree => routing_info[17..33].try_into().unwrap(),
-                        _ => {
-                            continue;
-                        }
-                    };
-
-                    if peer_changed_addr == their_webx_ipv6.octets() || sender_addr == their_webx_ipv6.octets() {
-                        continue;
-                    }
-
-                    if stream.write_all(&routing_info).await.is_err() {
                         break;
                     }
                 }
@@ -907,7 +672,7 @@ async fn handle_peer(
                                         log_error!("Packet from {} is not valid", Ipv6Addr::from(addr));
                                     }
                                 } else {
-                                    let t_peers_tree = peers_tree.clone();
+                                    let t_neighbors_db = neighbors_db.clone();
                                     let t_queue = queue.clone();
 
                                     tokio::task::spawn(async move {
@@ -919,9 +684,9 @@ async fn handle_peer(
 
                                         let addr: [u8; 16] = packet.ipv6_packet[24..40].try_into().unwrap();
                                         let addr = Ipv6Addr::from(addr);
-                                        let route_to = t_peers_tree.read().await.get_ipv6_to_route_to(addr);
+                                        let route_to = t_neighbors_db.read().await.get_sockaddr_to_route_to(addr);
 
-                                        if route_to == Ipv6Addr::UNSPECIFIED || route_to == their_webx_ipv6 {
+                                        if route_to == SocketAddr::from(([0, 0, 0, 0], 0)) || route_to == source {
                                             return;
                                         }
 
@@ -937,114 +702,7 @@ async fn handle_peer(
                                 log_error!("Failed to parse packet from {}", their_webx_ipv6);
                             }
                         },
-                        MsgType::FullPeerTree => {
-                            // read tree length
-                            let mut tree_length = [0u8; 4];
-                            if stream.read_exact(&mut tree_length).await.is_err() {
-                                break;
-                            }
-                            let tree_length = u32::from_be_bytes(tree_length) as usize;
-
-                            // read tree
-                            let mut tree_bytes = vec![0u8; tree_length];
-                            if stream.read_exact(&mut tree_bytes).await.is_err() {
-                                break;
-                            }
-
-                            {
-                                // parse tree
-                                let tree = PeerTree::from_bytes(&tree_bytes);
-
-                                // re-register peer
-                                let mut peers_tree = peers_tree.write().await;
-                                let _ = peers_tree.unregister_peer(their_webx_ipv6);
-                                let _ = peers_tree.register_peer(tree);
-
-                                // send routing to add peer to all peers
-                                let mut msg = vec![MsgType::NewPeerInTree as u8];
-                                msg.extend_from_slice(&our_wallet.ipv6.octets());
-                                msg.extend_from_slice(&(tree_bytes.len() as u32).to_be_bytes());
-                                msg.extend_from_slice(&tree_bytes);
-
-                                let _ = routing_broadcast_tx.send(msg);
-                            }
-
-                        },
-                        MsgType::NewPeerInTree => {
-                            let mut sender_addr = [0u8; 16];
-                            if stream.read_exact(&mut sender_addr).await.is_err() {
-                                break;
-                            }
-
-                            let mut tree_length = [0u8; 4];
-                            if stream.read_exact(&mut tree_length).await.is_err() {
-                                break;
-                            }
-                            let tree_length = u32::from_be_bytes(tree_length) as usize;
-
-                            // read tree
-                            let mut tree_bytes = vec![0u8; tree_length];
-                            if stream.read_exact(&mut tree_bytes).await.is_err() {
-                                break;
-                            }
-
-                            if peers_tree.read().await.get_subtree(Ipv6Addr::from(sender_addr)).is_none() {
-                                continue;
-                            }
-
-                            // parse tree
-                            let tree = PeerTree::from_bytes(&tree_bytes);
-
-                            if tree.ipv6 == our_wallet.ipv6 {
-                                continue;
-                            }
-
-                            // register in tree
-                            {
-                                let mut peers_tree = peers_tree.write().await;
-                                let subtree = peers_tree.get_subtree_mut(Ipv6Addr::from(sender_addr)).unwrap();
-                                if subtree.register_peer(tree).is_ok() {
-                                    // propagate message to other peers via routing_broadcast_tx
-                                    let mut msg = vec![MsgType::NewPeerInTree as u8];
-                                    msg.extend_from_slice(&sender_addr);
-                                    msg.extend_from_slice(&(tree_length as u32).to_be_bytes());
-                                    msg.extend_from_slice(&tree_bytes);
-
-                                    let _ = routing_broadcast_tx.send(msg);
-                                }
-                            }
-
-                        },
-                        MsgType::RemovePeerFromTree => {
-                            let mut sender_addr = [0u8; 16];
-                            if stream.read_exact(&mut sender_addr).await.is_err() {
-                                break;
-                            }
-
-                            let mut peer_to_remove = [0u8; 16];
-                            if stream.read_exact(&mut peer_to_remove).await.is_err() {
-                                break;
-                            }
-
-                            if peers_tree.read().await.get_subtree(Ipv6Addr::from(sender_addr)).is_none() {
-                                continue;
-                            }
-
-                            // unregister peer_to_remove from sender's tree
-                            {
-                                let mut peers_tree = peers_tree.write().await;
-                                let subtree = peers_tree.get_subtree_mut(Ipv6Addr::from(sender_addr)).unwrap();
-                                if subtree.unregister_peer(Ipv6Addr::from(peer_to_remove)).is_ok() {
-                                    // propagate message to other peers via routing_broadcast_tx
-                                    let mut msg = vec![MsgType::RemovePeerFromTree as u8];
-                                    msg.extend_from_slice(&sender_addr);
-                                    msg.extend_from_slice(&peer_to_remove);
-
-                                    let _ = routing_broadcast_tx.send(msg);
-                                }
-                            }
-                        },
-                        MsgType::Unknown => {
+                        _ => {
                             continue;
                         }
                     }
@@ -1061,17 +719,11 @@ async fn handle_peer(
         }
     }
 
-    let _ = peers_tree.write().await.unregister_peer(their_webx_ipv6);
+    let _ = neighbors_db.write().await.unregister_neighbor(source);
 
-    {
-        let mut msg = vec![MsgType::RemovePeerFromTree as u8];
-        msg.extend_from_slice(&our_wallet.ipv6.octets());
-        msg.extend_from_slice(&their_webx_ipv6.octets());
-        let _ = routing_broadcast_tx.send(msg);
-    }
-
-    queue.write().await.remove(&their_webx_ipv6);
+    queue.write().await.remove(&source);
     let _ = stream.write_u8(MsgType::Disconnect as u8).await;
+
     log_warn!(
         "(P2P) Connection with {} closed",
         socketaddr_formatter(source)
@@ -1082,19 +734,16 @@ pub async fn p2p_job(
     our_wallet: wallet::Wallet,
     server_enabled: bool,
     server_port: u16,
-    tree: Arc<RwLock<PeerTree>>,
-    queue: Arc<RwLock<HashMap<Ipv6Addr, kanal::AsyncSender<PacketForP2P>>>>,
+    neighbors_db: Arc<RwLock<NeighborsDb>>,
+    queue: Arc<RwLock<HashMap<SocketAddr, kanal::AsyncSender<PacketForP2P>>>>,
     tun_channel: TunKanal,
-    initial_peers: Vec<Vec<std::net::SocketAddr>>,
+    initial_peers: Vec<Vec<SocketAddr>>,
 ) {
-    let (routing_broadcast_tx, _) = tokio::sync::broadcast::channel(1024);
-
     for peer in initial_peers {
         let client_wallet = our_wallet.clone();
-        let client_tree = tree.clone();
+        let client_tree = neighbors_db.clone();
         let client_queue = queue.clone();
         let mut client_tun_channel = tun_channel.clone();
-        let client_routing_broadcast_tx = routing_broadcast_tx.clone();
 
         tokio::task::spawn(async move {
             let mut reconnecting = false;
@@ -1106,7 +755,6 @@ pub async fn p2p_job(
                     client_tree.clone(),
                     client_queue.clone(),
                     &mut client_tun_channel,
-                    &client_routing_broadcast_tx,
                     reconnecting,
                 )
                 .await
@@ -1128,10 +776,9 @@ pub async fn p2p_job(
         let res = server(
             our_wallet,
             server_port,
-            tree,
+            neighbors_db,
             queue,
             tun_channel,
-            routing_broadcast_tx,
         )
         .await;
 

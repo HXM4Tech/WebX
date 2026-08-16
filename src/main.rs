@@ -1,7 +1,7 @@
 use colored::Colorize;
 use serde::{Deserialize, Deserializer};
 use std::collections::HashMap;
-use std::net::Ipv6Addr;
+use std::net::{Ipv6Addr, SocketAddr};
 use std::process;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
@@ -107,10 +107,10 @@ struct Config {
     server_enabled: bool,
     server_port: Option<u16>,
     #[serde(deserialize_with = "initial_peers_deserialize")]
-    initial_peers: Vec<Vec<std::net::SocketAddr>>,
+    initial_peers: Vec<Vec<SocketAddr>>,
 }
 
-fn initial_peers_deserialize<'de, D>(de: D) -> Result<Vec<Vec<std::net::SocketAddr>>, D::Error>
+fn initial_peers_deserialize<'de, D>(de: D) -> Result<Vec<Vec<SocketAddr>>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -282,18 +282,19 @@ async fn main() {
     log_ok!("TUN interface has been set up!");
     log_info!("The interface has a name: {}", tun_if.name());
 
-    let peers_tree: Arc<RwLock<p2p_network::PeerTree>> =
-        Arc::new(RwLock::new(p2p_network::PeerTree::new(wlt.ipv6)));
-    let send_queue: Arc<RwLock<HashMap<Ipv6Addr, kanal::AsyncSender<p2p_network::PacketForP2P>>>> =
+    let neighbors_db: Arc<RwLock<p2p_network::NeighborsDb>> =
+        Arc::new(RwLock::new(p2p_network::NeighborsDb::new()));
+
+    let send_queue: Arc<RwLock<HashMap<SocketAddr, kanal::AsyncSender<p2p_network::PacketForP2P>>>> =
         Arc::new(RwLock::new(HashMap::new()));
     let mut tun_channel = tun_if.open_kanal();
 
-    let mut cli_sock = cli_socket::CliSocket::new(user_uid, peers_tree.clone(), wlt.clone());
+    let mut cli_sock = cli_socket::CliSocket::new(user_uid, neighbors_db.clone(), wlt.clone());
 
     cli_sock.start();
 
     let net_wlt = wlt.clone();
-    let net_peers_tree = peers_tree.clone();
+    let net_neighbors_db = neighbors_db.clone();
     let net_send_queue = send_queue.clone();
     let net_tun_channel = tun_channel.clone();
 
@@ -326,18 +327,19 @@ async fn main() {
                 }
 
                 let packet_for_p2p = p2p_network::PacketForP2P::new(packet, &wlt);
-                let route_to = peers_tree
+                let route_to = neighbors_db
                     .read()
                     .await
-                    .get_ipv6_to_route_to(Ipv6Addr::from(dst));
+                    .get_sockaddr_to_route_to(Ipv6Addr::from(dst));
 
-                if route_to == Ipv6Addr::UNSPECIFIED {
+                if route_to == SocketAddr::from(([0, 0, 0, 0], 0)) {
                     continue;
                 }
 
                 if let Some(queue_inner) = send_queue.read().await.get(&route_to) {
                     let _ = queue_inner.send(packet_for_p2p).await;
                 }
+
                 *STATS.total_packets_sent.lock().await += 1;
             }
         }
@@ -347,7 +349,7 @@ async fn main() {
         net_wlt,
         peer_config.server_enabled,
         peer_config.server_port.unwrap_or(4760),
-        net_peers_tree,
+        net_neighbors_db,
         net_send_queue,
         net_tun_channel,
         peer_config.initial_peers,

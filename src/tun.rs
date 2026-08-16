@@ -2,8 +2,6 @@ use colored::Colorize;
 use std::net::Ipv6Addr;
 use tun_tap::{Iface, Mode};
 
-use crate::wallet::IPV6_PREFIX;
-
 #[derive(Clone)]
 pub struct TunKanal {
     tx: kanal::AsyncSender<Vec<u8>>,
@@ -53,16 +51,6 @@ impl Tun {
             std::process::exit(1);
         };
 
-        // bring the interface up
-        std::process::Command::new("ip")
-            .arg("link")
-            .arg("set")
-            .arg("dev")
-            .arg(iface.name())
-            .arg("up")
-            .output()
-            .unwrap_or_else(|_| panic!("failed to bring up {} interface", iface.name()));
-
         std::process::Command::new("ip")
             .arg("link")
             .arg("set")
@@ -93,16 +81,14 @@ impl Tun {
             .output()
             .unwrap_or_else(|_| panic!("failed to add ipv6 address to {} interface", self.name));
 
-        // setup route
         std::process::Command::new("ip")
-            .arg("-6")
-            .arg("route")
-            .arg("add")
-            .arg(format!("{IPV6_PREFIX:x}00::/8"))
+            .arg("link")
+            .arg("set")
             .arg("dev")
             .arg(&self.name)
+            .arg("up")
             .output()
-            .unwrap_or_else(|_| panic!("failed to add route to {} interface", self.name));
+            .unwrap_or_else(|_| panic!("failed to bring up {} interface", self.name));
 
         self.setup_finished = true;
     }

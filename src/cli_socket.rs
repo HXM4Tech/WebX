@@ -15,8 +15,8 @@ pub struct Stats {
 enum CliMsgType {
     StatsRequest = 0,
     StatsResponse = 1,
-    KnownPeersRequest = 2,
-    KnownPeersResponse = 3,
+    NeighborsRequest = 2,
+    NeighborsResponse = 3,
     WalletInfoRequest = 4,
     WalletInfoResponse = 5,
 
@@ -28,8 +28,8 @@ impl CliMsgType {
         match n {
             0 => Self::StatsRequest,
             1 => Self::StatsResponse,
-            2 => Self::KnownPeersRequest,
-            3 => Self::KnownPeersResponse,
+            2 => Self::NeighborsRequest,
+            3 => Self::NeighborsResponse,
             4 => Self::WalletInfoRequest,
             5 => Self::WalletInfoResponse,
             _ => Self::Unknown,
@@ -38,7 +38,7 @@ impl CliMsgType {
 }
 
 pub struct CliSocket {
-    peers_tree: Option<Arc<RwLock<crate::p2p_network::PeerTree>>>,
+    neighbors_db: Option<Arc<RwLock<crate::p2p_network::NeighborsDb>>>,
     wallet: Option<crate::wallet::Wallet>,
     pub unix_socket_path: String,
     uid: u32,
@@ -47,13 +47,13 @@ pub struct CliSocket {
 impl CliSocket {
     pub fn new(
         uid: u32,
-        peers_tree: Arc<RwLock<crate::p2p_network::PeerTree>>,
+        neighbors_db: Arc<RwLock<crate::p2p_network::NeighborsDb>>,
         wallet: crate::wallet::Wallet,
     ) -> Self {
         let unix_socket_path = format!("/tmp/webx-{}.sock", uid);
 
         Self {
-            peers_tree: Some(peers_tree),
+            neighbors_db: Some(neighbors_db),
             wallet: Some(wallet),
             unix_socket_path,
             uid,
@@ -76,13 +76,13 @@ impl CliSocket {
                 .arg(&self.unix_socket_path)
                 .spawn();
 
-            let peers_tree = self.peers_tree.take().unwrap();
+            let neighbors_db = self.neighbors_db.take().unwrap();
             let wallet = self.wallet.take().unwrap();
 
             tokio::task::spawn(async move {
                 loop {
                     let (mut socket, _) = listener.accept().await.unwrap();
-                    let t_peers_tree = peers_tree.clone();
+                    let t_neighbors_db = neighbors_db.clone();
 
                     tokio::task::spawn(async move {
                         let mut buf = [0u8; 1];
@@ -112,18 +112,31 @@ impl CliSocket {
                                             return;
                                         }
                                     }
-                                    CliMsgType::KnownPeersRequest => {
-                                        let mut msg = vec![CliMsgType::KnownPeersResponse as u8];
-                                        let peers_tree = t_peers_tree.read().await;
-                                        let peers: std::collections::HashMap<
+                                    CliMsgType::NeighborsRequest => {
+                                        let mut msg = vec![CliMsgType::NeighborsResponse as u8];
+                                        let neighbors_db = t_neighbors_db.read().await;
+                                        let neighbors: std::collections::HashMap<
                                             std::net::Ipv6Addr,
-                                            u8,
-                                        > = peers_tree.get_known_peers();
+                                            std::net::SocketAddr,
+                                        > = neighbors_db.get_neighbors_hashmap();
 
-                                        msg.extend_from_slice(&(peers.len() as u16).to_be_bytes());
-                                        for (peer, lvl) in peers {
+                                        msg.extend_from_slice(&(neighbors.len() as u16).to_be_bytes());
+
+                                        for (peer, socketaddr) in neighbors {
                                             msg.extend_from_slice(&peer.octets());
-                                            msg.push(lvl);
+                                            
+                                            match socketaddr {
+                                                std::net::SocketAddr::V4(addr) => {
+                                                    msg.push(0);
+                                                    msg.extend_from_slice(&addr.ip().octets());
+                                                    msg.extend_from_slice(&addr.port().to_be_bytes());
+                                                }
+                                                std::net::SocketAddr::V6(addr) => {
+                                                    msg.push(1);
+                                                    msg.extend_from_slice(&addr.ip().octets());
+                                                    msg.extend_from_slice(&addr.port().to_be_bytes());
+                                                }
+                                            }
                                         }
 
                                         if socket.write_all(&msg).await.is_err() {
