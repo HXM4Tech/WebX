@@ -2,7 +2,7 @@
 WebX is decentralized peer-to-peer overlay network with cryptographic IPv6 addressing and packet verification.
 
 ## How it works?
-When launched, WebX daemon generates you a wallet (if not already present under `.webx/wallet`) and opens a TUN interface on your system. The interface is then assigned a WebX IPv6 address corresponding to your wallet, MTU of 1500 bytes and is brought up.
+When launched, WebX daemon generates you a wallet (if not already present under `.webx/wallet`) and opens a TUN interface on your system. The interface is then assigned a WebX IPv6 address corresponding to your wallet, MTU of 1280 bytes (temporarily to avoid IP fragmentation issues until inner TCP SYN interception and WebX message fragmentation are implemented) and is brought up.
 
 Each peer can operate as both server and client. You can enable/disable server and set port in the config file (either system-wide at `/etc/webx/config.toml` or user's personal at `~/.webx/config.toml`) along with initial peers, which daemon will try to connect to as soon as it's launched.
 

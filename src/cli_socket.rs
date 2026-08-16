@@ -2,14 +2,7 @@ use crate::STATS;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
-use tokio::sync::Mutex;
 use tokio::sync::RwLock;
-
-pub struct Stats {
-    pub total_packets_sent: Mutex<u128>,
-    pub total_packets_received: Mutex<u128>,
-    pub total_packets_forwarded: Mutex<u128>,
-}
 
 #[repr(u8)]
 enum CliMsgType {

@@ -1,22 +1,23 @@
 use crate::tun::TunKanal;
 use crate::wallet;
 use crate::STATS;
+use crate::udp_handler::UdpHandler;
+
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use std::collections::HashMap;
 use std::net::{Ipv6Addr, SocketAddr};
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 use blake3::Hasher;
 
-const MAX_CONNECTED_PEERS: usize = 8;
+const MAX_NEIGHBORS: usize = 64;
 
-pub fn socketaddr_formatter(socketaddr: SocketAddr) -> String {
+pub fn socketaddr_formatter(socketaddr: std::net::SocketAddr) -> String {
     match socketaddr {
-        SocketAddr::V4(socketaddr) => {
+        std::net::SocketAddr::V4(socketaddr) => {
             format!("{}:{}", socketaddr.ip(), socketaddr.port())
         }
-        SocketAddr::V6(socketaddr) => {
+        std::net::SocketAddr::V6(socketaddr) => {
             if let Some(ipv4) = socketaddr.ip().to_ipv4_mapped() {
                 return format!("{}:{}", ipv4, socketaddr.port());
             }
@@ -56,8 +57,8 @@ impl NeighborsDb {
     }
 
     pub fn register_neighbor(&mut self, neighbor: Neighbor) -> Result<(), &str> {
-        if self.neighbors.len() >= MAX_CONNECTED_PEERS {
-            return Err("Max connected peers reached");
+        if self.neighbors.len() >= MAX_NEIGHBORS {
+            return Err("Maximum number of connected peers reached");
         }
 
         if self.neighbors.contains(&neighbor) {
@@ -235,7 +236,7 @@ impl PacketForP2P {
 }
 
 #[repr(u8)]
-enum MsgType {
+pub enum MsgType {
     // just this one byte
     KeepAlive = 0,
     // PacketForP2P (variable length; no need to send lenght as it could be determinded from IPv6 header)
@@ -243,6 +244,7 @@ enum MsgType {
 
     // just this one byte
     Disconnect = 254,
+
     Unknown = 255,
 }
 
@@ -258,32 +260,24 @@ impl MsgType {
 }
 
 async fn server(
+    sock: UdpHandler,
+    udp_rx: kanal::AsyncReceiver<(SocketAddr, Vec<u8>)>,
     our_wallet: wallet::Wallet,
-    port: u16,
     neighbors_db: Arc<RwLock<NeighborsDb>>,
-    queue: Arc<RwLock<HashMap<SocketAddr, kanal::AsyncSender<PacketForP2P>>>>,
     tun_channel: TunKanal,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let listener = tokio::net::TcpListener::bind((Ipv6Addr::UNSPECIFIED, port)).await?;
-    log_ok!("(P2P) Server has started and is listening on port {}", port);
-
     loop {
-        let (mut stream, source) = listener.accept().await.unwrap();
+        let (source, their_hello_msg) = udp_rx.recv().await?;
+
         let handler_neighbors_db = neighbors_db.clone();
-        let handler_queue = queue.clone();
         let handler_wallet = our_wallet.clone();
         let mut handler_tun_channel = tun_channel.clone();
+        let handler_sock = sock.clone();
 
-        // SERVER
         tokio::task::spawn(async move {
-            let mut their_hello_msg = [0u8; 16 + 64 + 1];
-
-            if stream.read_exact(&mut their_hello_msg).await.is_err() {
-                let _ = stream.write_u8(MsgType::Disconnect as u8).await;
-                log_error!(
-                    "(P2P) Connection with {} failed, cannot read message",
-                    socketaddr_formatter(source)
-                );
+            if their_hello_msg.len() != 16 + 64 + 1 {
+                let _ = handler_sock.send_to(&[MsgType::Disconnect as u8], source).await;
+                // invalid handshake message length
                 return;
             }
 
@@ -295,12 +289,12 @@ async fn server(
                 let hello_recid = their_hello_msg[80];
 
                 let Ok(hello_signature) = Signature::from_slice(&their_hello_msg[16..80]) else {
-                    let _ = stream.write_u8(MsgType::Disconnect as u8).await;
+                    let _ = handler_sock.send_to(&[MsgType::Disconnect as u8], source).await;
                     log_error!("(P2P) Connection from {} rejected, authorization failed", socketaddr_formatter(source));
                     return;
                 };
                 let Some(hello_recovery_id) = RecoveryId::from_byte(hello_recid >> 6) else {
-                    let _ = stream.write_u8(MsgType::Disconnect as u8).await;
+                    let _ = handler_sock.send_to(&[MsgType::Disconnect as u8], source).await;
                     log_error!("(P2P) Connection from {} rejected, authorization failed", socketaddr_formatter(source));
                     return;
                 };
@@ -314,7 +308,7 @@ async fn server(
                     &hello_signature,
                     hello_recovery_id,
                 ) else {
-                    let _ = stream.write_u8(MsgType::Disconnect as u8).await;
+                    let _ = handler_sock.send_to(&[MsgType::Disconnect as u8], source).await;
                     log_error!("(P2P) Connection from {} rejected, authorization failed", socketaddr_formatter(source));
                     return;
                 };
@@ -329,7 +323,7 @@ async fn server(
                 }
 
                 if valid_checksum != (hello_recid & 0b00111111) {
-                    let _ = stream.write_u8(MsgType::Disconnect as u8).await;
+                    let _ = handler_sock.send_to(&[MsgType::Disconnect as u8], source).await;
                     log_error!(
                         "(P2P) Connection from {} rejected, authorization failed",
                         socketaddr_formatter(source)
@@ -341,7 +335,7 @@ async fn server(
                 if their_webx_ipv6.octets()[1..16]
                     != wallet::Wallet::generate_ipv6(&their_public_key).octets()[1..16]
                 {
-                    let _ = stream.write_u8(MsgType::Disconnect as u8).await;
+                    let _ = handler_sock.send_to(&[MsgType::Disconnect as u8], source).await;
                     log_error!(
                         "(P2P) Connection from {} rejected, authorization failed",
                         socketaddr_formatter(source)
@@ -370,7 +364,7 @@ async fn server(
                 our_hello_msg.extend_from_slice(&hello_signature);
                 our_hello_msg.push((hello_recid << 6) | checksum);
 
-                if stream.write_all(&our_hello_msg).await.is_err() {
+                if handler_sock.send_to(&our_hello_msg, source).await.is_err() {
                     log_error!(
                         "(P2P) Connection with {} failed",
                         socketaddr_formatter(source)
@@ -379,215 +373,174 @@ async fn server(
                 }
             }
 
-            // add them to our neighbor db
-            if (*handler_neighbors_db.write().await)
-                .register_neighbor(Neighbor::new(their_webx_ipv6, source))
-                .is_err()
-            {
-                let _ = stream.write_u8(MsgType::Disconnect as u8).await;
-                log_error!(
-                    "(P2P) Connection with {} failed, cannot register neighbor",
-                    socketaddr_formatter(source)
-                );
-                return;
-            };
-
-            // add them to our queue
-            let (tx, rx) = kanal::unbounded_async();
-
-            handler_queue.write().await.insert(source, tx);
-
-            log_ok!(
-                "(P2P) Connected to {} with WebX IPv6 address {}",
-                socketaddr_formatter(source),
-                their_webx_ipv6
-            );
+            let udp_rx = handler_sock.connect(source).await;
 
             handle_peer(
                 source,
                 their_webx_ipv6,
                 &handler_wallet,
                 handler_neighbors_db,
-                handler_queue,
-                rx,
                 &mut handler_tun_channel,
-                stream,
-            )
-            .await;
+                handler_sock,
+                udp_rx,
+            ).await;
         });
     }
 }
 
 async fn client(
+    sock: UdpHandler,
     our_wallet: &wallet::Wallet,
-    server_addr_vec: &[SocketAddr],
+    server_addr: SocketAddr,
     neighbors_db: Arc<RwLock<NeighborsDb>>,
-    queue: Arc<RwLock<HashMap<SocketAddr, kanal::AsyncSender<PacketForP2P>>>>,
     tun_channel: &mut TunKanal,
     reconnecting: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut server_addr = SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0);
-    let mut stream = None;
+    let udp_rx = sock.connect(server_addr).await;
 
-    for a in server_addr_vec {
-        tokio::select!(
-            s = tokio::net::TcpStream::connect(a) => {
-                match s {
-                    Ok(s) => {
-                        server_addr = *a;
-                        stream = Some(s);
-                        break;
-                    },
-                    Err(_) => continue,
+    let (hello_signature, hello_recid) = &our_wallet.sign_recoverable(b"hello");
+    let hello_signature = hello_signature.to_bytes();
+    let hello_recid = hello_recid.to_byte();
+
+    let our_pubkey_bytes = our_wallet.public_key.to_sec1_bytes();
+
+    // algorithm to embed checksum in recid
+    let mut checksum = 0;
+    for i in 0..32 {
+        checksum ^= our_pubkey_bytes[i];
+        checksum %= 0b01000000;
+    }
+
+    let mut our_hello_msg = Vec::new();
+    our_hello_msg.extend_from_slice(&our_wallet.ipv6.octets());
+    our_hello_msg.extend_from_slice(&hello_signature);
+    our_hello_msg.push((hello_recid << 6) | checksum);
+
+    if sock.send_to(&our_hello_msg, server_addr).await.is_err() {
+        let _ = sock.close(server_addr).await;
+        if !reconnecting {
+            log_error!(
+                "(P2P) Connection to {} failed",
+                socketaddr_formatter(server_addr)
+            );
+        }
+        return Err("Unable to communicate".into()); // do not send disconnect message as we can't write to stream
+    }
+
+    let their_webx_ipv6: Ipv6Addr;
+
+    tokio::select!(
+        r = udp_rx.recv() => {
+            match r {
+                Ok(their_hello_msg) => {
+                    if their_hello_msg.len() != 16 + 64 + 1 {
+                        let _ = sock.close(server_addr).await;
+                        if !reconnecting {
+                            log_error!(
+                                "(P2P) Connection to {} failed, invalid handshake message length",
+                                socketaddr_formatter(server_addr)
+                            );
+                        }
+                        return Err("Unable to communicate".into());
+                    }
+
+                    their_webx_ipv6 = Ipv6Addr::from(<&[u8] as TryInto<[u8; 16]>>::try_into(&their_hello_msg[0..16]).unwrap());
+
+                    // veify their hello message
+                    let hello_recid = their_hello_msg[80];
+
+                    let Ok(hello_signature) = Signature::from_slice(&their_hello_msg[16..80]) else {
+                        let _ = sock.send_to(&[MsgType::Disconnect as u8], server_addr).await;
+                        let _ = sock.close(server_addr).await;
+
+                        if !reconnecting {
+                            log_error!("(P2P) Connection with {} cannot be enstabilished, authorization failed", socketaddr_formatter(server_addr));
+                        }
+                        return Err("Auth failed".into());
+                    };
+                    let Some(hello_recovery_id) = RecoveryId::from_byte(hello_recid >> 6) else {
+                        let _ = sock.send_to(&[MsgType::Disconnect as u8], server_addr).await;
+                        let _ = sock.close(server_addr).await;
+
+                        if !reconnecting {
+                            log_error!("(P2P) Connection with {} cannot be enstabilished, authorization failed", socketaddr_formatter(server_addr));
+                        }
+                        return Err("Auth failed".into());
+                    };
+
+                    let mut hasher = Hasher::new();
+                    hasher.update(b"hello");
+                    let prehash = hasher.finalize().as_slice().to_owned();
+
+                    let Ok(their_public_key) = VerifyingKey::recover_from_prehash(
+                        &prehash,
+                        &hello_signature,
+                        hello_recovery_id,
+                    ) else {
+                        let _ = sock.send_to(&[MsgType::Disconnect as u8], server_addr).await;
+                        let _ = sock.close(server_addr).await;
+
+                        if !reconnecting {
+                            log_error!("(P2P) Connection with {} cannot be enstabilished, authorization failed", socketaddr_formatter(server_addr));
+                        }
+                        return Err("Auth failed".into());
+                    };
+
+                    let their_public_key_bytes = their_public_key.to_sec1_bytes();
+
+                    // check public key checksum (last 6 bits of recid)
+                    let mut valid_checksum = 0;
+                    for i in 0..32 {
+                        valid_checksum ^= their_public_key_bytes[i];
+                        valid_checksum %= 0b01000000;
+                    }
+
+                    if valid_checksum != (hello_recid & 0b00111111) {
+                        let _ = sock.send_to(&[MsgType::Disconnect as u8], server_addr).await;
+                        let _ = sock.close(server_addr).await;
+                        
+                        if !reconnecting {
+                            log_error!(
+                                "(P2P) Connection with {} cannot be enstabilished, authorization failed",
+                                socketaddr_formatter(server_addr)
+                            );
+                        }
+                        return Err("Auth failed".into());
+                    }
+
+                    // check if their public key matches their WebX IPv6 address
+                    if their_webx_ipv6.octets()[1..16]
+                        != wallet::Wallet::generate_ipv6(&their_public_key).octets()[1..16]
+                    {
+                        let _ = sock.send_to(&[MsgType::Disconnect as u8], server_addr).await;
+                        let _ = sock.close(server_addr).await;
+
+                        if !reconnecting {
+                            log_error!(
+                                "(P2P) Connection with {} cannot be enstabilished, authorization failed",
+                                socketaddr_formatter(server_addr)
+                            );
+                        }
+                        return Err("Auth failed".into());
+                    }
+                },
+                Err(_) => {
+                    let _ = sock.close(server_addr).await;
+
+                    if !reconnecting {
+                        log_error!(
+                            "(P2P) Connection to {} failed, cannot read message",
+                            socketaddr_formatter(server_addr)
+                        );
+                    }
+                    return Err("Unable to communicate".into());
                 }
-            },
-            _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {
-                continue;
             }
-        )
-    }
-
-    let mut stream = stream.ok_or("Could not connect to the peer")?;
-
-    {
-        let (hello_signature, hello_recid) = &our_wallet.sign_recoverable(b"hello");
-        let hello_signature = hello_signature.to_bytes();
-        let hello_recid = hello_recid.to_byte();
-
-        let our_pubkey_bytes = our_wallet.public_key.to_sec1_bytes();
-
-        // algorithm to embed checksum in recid
-        let mut checksum = 0;
-        for i in 0..32 {
-            checksum ^= our_pubkey_bytes[i];
-            checksum %= 0b01000000;
+        },
+        _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {
+            let _ = sock.close(server_addr).await;
+            return Err("Timeout connecting to peer".into());
         }
-
-        let mut our_hello_msg = Vec::new();
-        our_hello_msg.extend_from_slice(&our_wallet.ipv6.octets());
-        our_hello_msg.extend_from_slice(&hello_signature);
-        our_hello_msg.push((hello_recid << 6) | checksum);
-
-        if stream.write_all(&our_hello_msg).await.is_err() {
-            if !reconnecting {
-                log_error!(
-                    "(P2P) Connection to {} failed",
-                    socketaddr_formatter(server_addr)
-                );
-            }
-            return Err("Unable to communicate".into()); // do not send disconnect message as we can't write to stream
-        }
-    }
-
-    let mut their_hello_msg = [0u8; 16 + 64 + 1];
-
-    if stream.read_exact(&mut their_hello_msg).await.is_err() {
-        let _ = stream.write_u8(MsgType::Disconnect as u8).await;
-        if !reconnecting {
-            log_error!(
-                "(P2P) Connection with {} failed, cannot read message",
-                socketaddr_formatter(server_addr)
-            );
-        }
-        return Err("Unable to communicate".into());
-    }
-
-    let their_webx_ipv6: [u8; 16] = their_hello_msg[0..16].try_into().unwrap();
-    let their_webx_ipv6 = Ipv6Addr::from(their_webx_ipv6);
-
-    // verify their hello message signature
-    {
-        let hello_recid = their_hello_msg[80];
-
-        let Ok(hello_signature) = Signature::from_slice(&their_hello_msg[16..80]) else {
-            let _ = stream.write_u8(MsgType::Disconnect as u8).await;
-            if !reconnecting {
-                log_error!("(P2P) Connection with {} cannot be enstabilished, authorization failed", socketaddr_formatter(server_addr));
-            }
-            return Err("Auth failed".into());
-        };
-        let Some(hello_recovery_id) = RecoveryId::from_byte(hello_recid >> 6) else {
-            let _ = stream.write_u8(MsgType::Disconnect as u8).await;
-            if !reconnecting {
-                log_error!("(P2P) Connection with {} cannot be enstabilished, authorization failed", socketaddr_formatter(server_addr));
-            }
-            return Err("Auth failed".into());
-        };
-
-        let mut hasher = Hasher::new();
-        hasher.update(b"hello");
-        let prehash = hasher.finalize().as_slice().to_owned();
-
-        let Ok(their_public_key) = VerifyingKey::recover_from_prehash(
-            &prehash,
-            &hello_signature,
-            hello_recovery_id,
-        ) else {
-            let _ = stream.write_u8(MsgType::Disconnect as u8).await;
-            if !reconnecting {
-                log_error!("(P2P) Connection with {} cannot be enstabilished, authorization failed", socketaddr_formatter(server_addr));
-            }
-            return Err("Auth failed".into());
-        };
-
-        let their_public_key_bytes = their_public_key.to_sec1_bytes();
-
-        // check public key checksum (last 6 bits of recid)
-        let mut valid_checksum = 0;
-        for i in 0..32 {
-            valid_checksum ^= their_public_key_bytes[i];
-            valid_checksum %= 0b01000000;
-        }
-
-        if valid_checksum != (hello_recid & 0b00111111) {
-            let _ = stream.write_u8(MsgType::Disconnect as u8).await;
-            if !reconnecting {
-                log_error!(
-                    "(P2P) Connection with {} cannot be enstabilished, authorization failed",
-                    socketaddr_formatter(server_addr)
-                );
-            }
-            return Err("Auth failed".into());
-        }
-
-        // check if their public key matches their WebX IPv6 address
-        if their_webx_ipv6.octets()[1..16]
-            != wallet::Wallet::generate_ipv6(&their_public_key).octets()[1..16]
-        {
-            let _ = stream.write_u8(MsgType::Disconnect as u8).await;
-            if !reconnecting {
-                log_error!(
-                    "(P2P) Connection with {} cannot be enstabilished, authorization failed",
-                    socketaddr_formatter(server_addr)
-                );
-            }
-            return Err("Auth failed".into());
-        }
-    }
-
-    // add them to our peer tree
-    if (*neighbors_db.write().await)
-        .register_neighbor(Neighbor::new(their_webx_ipv6, server_addr))
-        .is_err()
-    {
-        let _ = stream.write_u8(MsgType::Disconnect as u8).await;
-        if !reconnecting {
-            log_error!(
-                "(P2P) Connection with {} failed, cannot register in peer tree",
-                socketaddr_formatter(server_addr)
-            );
-        }
-        return Err("Unable to register in peer tree".into());
-    };
-
-    // add them to our queue
-    let (tx, rx) = kanal::unbounded_async();
-    queue.write().await.insert(server_addr, tx);
-
-    log_ok!(
-        "(P2P) Connected to {} with WebX IPv6 address {}",
-        socketaddr_formatter(server_addr),
-        their_webx_ipv6
     );
 
     handle_peer(
@@ -595,41 +548,59 @@ async fn client(
         their_webx_ipv6,
         our_wallet,
         neighbors_db,
-        queue,
-        rx,
         tun_channel,
-        stream,
-    )
-    .await;
+        sock,
+        udp_rx
+    ).await;
 
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_peer(
-    source: SocketAddr,
+    their_realaddr: SocketAddr,
     their_webx_ipv6: Ipv6Addr,
     our_wallet: &wallet::Wallet,
     neighbors_db: Arc<RwLock<NeighborsDb>>,
-    queue: Arc<RwLock<HashMap<SocketAddr, kanal::AsyncSender<PacketForP2P>>>>,
-    queue_rx: kanal::AsyncReceiver<PacketForP2P>,
     tun_channel: &mut TunKanal,
-    mut stream: tokio::net::TcpStream,
+    sock: UdpHandler,
+    udp_rx: kanal::AsyncReceiver<Vec<u8>>
 ) {
+
+    // register neighbor
+    if (*neighbors_db.write().await)
+        .register_neighbor(Neighbor::new(their_webx_ipv6, their_realaddr))
+        .is_err()
+    {
+        let _ = sock.send_to(&[MsgType::Disconnect as u8], their_realaddr).await;
+
+        log_error!(
+            "(P2P) Connection with {} closed: {}",
+            socketaddr_formatter(their_realaddr),
+            "unable to register neighbor"
+        );
+
+        return;
+    };
+
+    log_ok!(
+        "(P2P) Connected to {} with WebX IPv6 address {}",
+        socketaddr_formatter(their_realaddr),
+        their_webx_ipv6
+    );
+
+    let inactivity_duration = std::time::Duration::from_secs(20);
+    let mut inactivity_deadline = tokio::time::Instant::now() + inactivity_duration;
+    
+    let mut keepalive_interval = tokio::time::interval(std::time::Duration::from_secs(5));
+    keepalive_interval.tick().await;
+
     loop {
         tokio::select! {
-            packet = queue_rx.recv() => {
-                if let Ok(packet) = packet {
-                    let mut msg = vec![MsgType::Packet as u8];
-                    msg.extend_from_slice(&packet.to_bytes());
+            msg = udp_rx.recv() => {
+                if let Ok(msg) = msg {
+                    inactivity_deadline = tokio::time::Instant::now() + inactivity_duration;
 
-                    if stream.write_all(&msg).await.is_err() {
-                        break;
-                    }
-                }
-            },
-            msg_type = stream.read_u8() => {
-                if let Ok(msg_type) = msg_type {
+                    let msg_type = msg[0];
                     match MsgType::from_byte(msg_type) {
                         MsgType::KeepAlive => {
                             // do nothing
@@ -638,38 +609,23 @@ async fn handle_peer(
                             break;
                         },
                         MsgType::Packet => {
-                            // read 40 bytes (ipv6 header)
-                            let mut ipv6_header = [0u8; 40];
-                            if stream.read_exact(&mut ipv6_header).await.is_err() {
+                            if msg.len() < 41 {
                                 break;
                             }
-
-                            // get payload length from ipv6 header
+                            let ipv6_header = &msg[1..41];
                             let payload_length = u16::from_be_bytes([ipv6_header[4], ipv6_header[5]]) as usize;
 
-                            // read payload
-                            let mut payload = vec![0u8; payload_length];
-                            if stream.read_exact(&mut payload).await.is_err() {
+                            if msg.len() != 41 + payload_length + 65 {
                                 break;
                             }
 
-                            // read signature + recid
-                            let mut signature_and_recid = [0u8; 65];
-                            if stream.read_exact(&mut signature_and_recid).await.is_err() {
-                                break;
-                            }
-
-                            let mut packet = Vec::new();
-                            packet.extend_from_slice(&ipv6_header);
-                            packet.extend_from_slice(&payload);
-                            packet.extend_from_slice(&signature_and_recid);
-
-                            if let Ok(mut packet) = PacketForP2P::from_bytes(&packet) {
+                            if let Ok(mut packet) = PacketForP2P::from_bytes(&msg[1..]) {
                                 if packet.ipv6_packet[24..40] == our_wallet.ipv6.octets() {
                                     if packet.verify() {
                                         // send to TUN interface
                                         if tun_channel.send(packet.into_ipv6_packet()).await.is_err() {
                                             log_error!("Failed to send packet to TUN interface");
+                                            continue;
                                         }
                                         *STATS.total_packets_received.lock().await += 1;
 
@@ -679,7 +635,7 @@ async fn handle_peer(
                                     }
                                 } else {
                                     let t_neighbors_db = neighbors_db.clone();
-                                    let t_queue = queue.clone();
+                                    let t_sock = sock.clone();
 
                                     tokio::task::spawn(async move {
                                         if packet.hop_limit == 0 {
@@ -692,13 +648,16 @@ async fn handle_peer(
                                         let addr = Ipv6Addr::from(addr);
                                         let route_to = t_neighbors_db.read().await.get_sockaddr_to_route_to(addr);
 
-                                        if route_to == SocketAddr::from(([0, 0, 0, 0], 0)) || route_to == source {
+                                        if route_to == SocketAddr::from(([0, 0, 0, 0], 0)) || route_to == their_realaddr {
                                             return;
                                         }
 
-                                        let queue = t_queue.read().await;
-                                        if let Some(queue_inner) = queue.get(&route_to) {
-                                            let _ = queue_inner.send(packet).await;
+                                        let mut msg = vec![MsgType::Packet as u8];
+                                        msg.extend_from_slice(&packet.to_bytes());
+
+                                        if t_sock.send_to(&msg, route_to).await.is_err() {
+                                            log_error!("Failed to forward packet to {}", socketaddr_formatter(route_to));
+                                            return;
                                         }
 
                                         *STATS.total_packets_forwarded.lock().await += 1;
@@ -716,83 +675,82 @@ async fn handle_peer(
                     break;
                 }
             },
-            // if nothing happens over 10 seconds, send keepalive
-            _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {
-                if stream.write_u8(MsgType::KeepAlive as u8).await.is_err() {
-                    break;
-                }
+            _ = tokio::time::sleep_until(inactivity_deadline) => {
+                log_warn!(
+                    "(P2P) Connection with {} timed out due to inactivity",
+                    socketaddr_formatter(their_realaddr)
+                );
+                break;
+            },
+            _ = keepalive_interval.tick() => {
+                let _ = sock.send_to(&[MsgType::KeepAlive as u8], their_realaddr).await;
             }
         }
     }
 
-    let _ = neighbors_db.write().await.unregister_neighbor(source);
+    let _ = neighbors_db.write().await.unregister_neighbor(their_realaddr);
+    let _ = sock.send_to(&[MsgType::Disconnect as u8], their_realaddr).await;
 
-    queue.write().await.remove(&source);
-    let _ = stream.write_u8(MsgType::Disconnect as u8).await;
+    let _ = sock.close(their_realaddr).await;
 
     log_warn!(
         "(P2P) Connection with {} closed",
-        socketaddr_formatter(source)
+        socketaddr_formatter(their_realaddr)
     );
 }
 
 pub async fn p2p_job(
+    sock: UdpHandler,
+    udp_inbound_rx: kanal::AsyncReceiver<(SocketAddr, Vec<u8>)>,
     our_wallet: wallet::Wallet,
-    server_enabled: bool,
-    server_port: u16,
     neighbors_db: Arc<RwLock<NeighborsDb>>,
-    queue: Arc<RwLock<HashMap<SocketAddr, kanal::AsyncSender<PacketForP2P>>>>,
     tun_channel: TunKanal,
-    initial_peers: Vec<Vec<SocketAddr>>,
+    initial_peers: Vec<SocketAddr>,
 ) {
     for peer in initial_peers {
         let client_wallet = our_wallet.clone();
-        let client_tree = neighbors_db.clone();
-        let client_queue = queue.clone();
+        let client_neighbors_db = neighbors_db.clone();
         let mut client_tun_channel = tun_channel.clone();
+
+        let client_sock = sock.clone();
 
         tokio::task::spawn(async move {
             let mut reconnecting = false;
 
             loop {
-                if client(
+                if let Err(e) = client(
+                    client_sock.clone(),
                     &client_wallet,
-                    &peer,
-                    client_tree.clone(),
-                    client_queue.clone(),
+                    peer,
+                    client_neighbors_db.clone(),
                     &mut client_tun_channel,
                     reconnecting,
-                )
-                .await
-                .is_err()
-                    && !reconnecting
-                {
-                    log_warn!(
-                        "(P2P) Failed to connect to {}",
-                        socketaddr_formatter(peer[0])
-                    );
-                };
+                ).await {
+                    if !reconnecting {
+                        log_warn!(
+                            "(P2P) Failed to connect to {}, error: {}",
+                            socketaddr_formatter(peer),
+                            e
+                        );
+                    }
+                }
+
                 reconnecting = true;
                 tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             }
         });
     }
 
-    if server_enabled {
-        let res = server(
-            our_wallet,
-            server_port,
-            neighbors_db,
-            queue,
-            tun_channel,
-        )
-        .await;
 
-        if res.is_err() {
-            panic!("P2P: server failed: {:?}", res.err().unwrap());
-        }
-    } else {
-        log_warn!("(P2P) Server disabled in config file");
-        std::future::pending::<()>().await;
+    let res = server(
+        sock,
+        udp_inbound_rx,
+        our_wallet,
+        neighbors_db,
+        tun_channel,
+    ).await;
+
+    if res.is_err() {
+        panic!("P2P: server failed: {:?}", res.err().unwrap());
     }
 }

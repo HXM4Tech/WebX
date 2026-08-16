@@ -51,13 +51,15 @@ impl Tun {
             std::process::exit(1);
         };
 
+        // temporarily set MTU to 1280 to avoid fragmentation issues, will be changed later
+        // TODO: implement inner TCP SYN interception and WebX message fragmentation
         std::process::Command::new("ip")
             .arg("link")
             .arg("set")
             .arg("dev")
             .arg(iface.name())
             .arg("mtu")
-            .arg("1500")
+            .arg("1280")
             .output()
             .unwrap_or_else(|_| panic!("failed to set MTU of {} interface", iface.name()));
 

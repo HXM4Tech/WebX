@@ -1,12 +1,8 @@
 # WebX daemon configuration file
 # Note that this file can be overriden by ~/.webx/config.toml in the user's home directory
 
-# Disable the server by setting this to false if you want to connect only as a client
-# this is useful when you are behind a NAT and you can't open the port
-server_enabled = true
-
-# The port on which the server will listen
-server_port = 4760
+# The address and port to bind the UDP socket to.
+bind_addr = "[::]:4760"
 
 # You can add peers, that the WebX daemon will connect to as client on startup
 # The format is "address:port"

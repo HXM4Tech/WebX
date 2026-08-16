@@ -1,6 +1,5 @@
 use colored::Colorize;
 use serde::{Deserialize, Deserializer};
-use std::collections::HashMap;
 use std::net::{Ipv6Addr, SocketAddr};
 use std::process;
 use std::sync::Arc;
@@ -13,6 +12,7 @@ extern crate lazy_static;
 mod logging_macros;
 
 mod cli_socket;
+mod udp_handler;
 mod p2p_network;
 mod tun;
 mod wallet;
@@ -84,33 +84,15 @@ where
     t
 }
 
-fn setup() {
-    std::panic::set_hook(Box::new(panic_hook));
-
-    tokio::task::spawn(async move {
-        use tokio::signal::unix::{signal, SignalKind};
-
-        let mut sigterm = signal(SignalKind::terminate()).unwrap();
-        let mut sigint = signal(SignalKind::interrupt()).unwrap();
-
-        tokio::select! {
-            _ = sigterm.recv() => eprintln!("\n{}", "SIGTERM received, exiting...".yellow().bold()),
-            _ = sigint.recv() => eprintln!("\n{}", "SIGINT received, exiting...".yellow().bold()),
-        }
-
-        process::exit(0);
-    });
-}
-
 #[derive(Deserialize)]
 struct Config {
-    server_enabled: bool,
-    server_port: Option<u16>,
+    bind_addr: Option<SocketAddr>,
+
     #[serde(deserialize_with = "initial_peers_deserialize")]
-    initial_peers: Vec<Vec<SocketAddr>>,
+    initial_peers: Vec<SocketAddr>,
 }
 
-fn initial_peers_deserialize<'de, D>(de: D) -> Result<Vec<Vec<SocketAddr>>, D::Error>
+fn initial_peers_deserialize<'de, D>(de: D) -> Result<Vec<SocketAddr>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -118,23 +100,33 @@ where
 
     let unresolved = Vec::<String>::deserialize(de)?;
     let mut resolved = vec![];
+
     for a in unresolved {
         let a = match a.to_socket_addrs() {
-            Ok(a) => a,
+            Ok(a) => a.collect::<Vec<_>>()[0],
             Err(e) => {
                 let a = format!("{}:4760", a);
-                a.to_socket_addrs()
-                    .map_err(|_| serde::de::Error::custom(e))?
+                
+                match a.to_socket_addrs() {
+                    Ok(b) => b.collect::<Vec<_>>()[0],
+                    Err(_e1) => return Err(serde::de::Error::custom(e)),
+                }
             }
         };
 
-        resolved.push(a.collect::<Vec<_>>());
+        resolved.push(a);
     }
     Ok(resolved)
 }
 
+pub struct Stats {
+    pub total_packets_sent: Mutex<u128>,
+    pub total_packets_received: Mutex<u128>,
+    pub total_packets_forwarded: Mutex<u128>,
+}
+
 lazy_static! {
-    static ref STATS: cli_socket::Stats = cli_socket::Stats {
+    static ref STATS: Stats = Stats {
         total_packets_sent: Mutex::new(0),
         total_packets_received: Mutex::new(0),
         total_packets_forwarded: Mutex::new(0),
@@ -143,7 +135,7 @@ lazy_static! {
 
 #[tokio::main]
 async fn main() {
-    setup();
+    std::panic::set_hook(Box::new(panic_hook));
 
     let (home_dir, user_uid) = {
         use users::os::unix::UserExt;
@@ -280,23 +272,42 @@ async fn main() {
     });
 
     log_ok!("TUN interface has been set up!");
-    log_info!("The interface has a name: {}", tun_if.name());
+    log_info!("The interface has name: {}", tun_if.name());
 
     let neighbors_db: Arc<RwLock<p2p_network::NeighborsDb>> =
         Arc::new(RwLock::new(p2p_network::NeighborsDb::new(wlt.ipv6)));
 
-    let send_queue: Arc<RwLock<HashMap<SocketAddr, kanal::AsyncSender<p2p_network::PacketForP2P>>>> =
-        Arc::new(RwLock::new(HashMap::new()));
     let mut tun_channel = tun_if.open_kanal();
-
     let mut cli_sock = cli_socket::CliSocket::new(user_uid, neighbors_db.clone(), wlt.clone());
 
     cli_sock.start();
 
+    let (sock, udp_inbound_rx) = udp_handler::UdpHandler::bind(
+        peer_config.bind_addr.unwrap_or(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 4760)))
+    ).await.unwrap();
+
+    
+    let sock_signalhandler = sock.clone();
+    tokio::task::spawn(async move {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut sigterm = signal(SignalKind::terminate()).unwrap();
+        let mut sigint = signal(SignalKind::interrupt()).unwrap();
+
+        tokio::select! {
+            _ = sigterm.recv() => eprintln!("\n{}", "SIGTERM received, exiting...".yellow().bold()),
+            _ = sigint.recv() => eprintln!("\n{}", "SIGINT received, exiting...".yellow().bold()),
+        }
+
+        sock_signalhandler.cleanup().await;
+        process::exit(0);
+    });
+
+
     let net_wlt = wlt.clone();
     let net_neighbors_db = neighbors_db.clone();
-    let net_send_queue = send_queue.clone();
     let net_tun_channel = tun_channel.clone();
+    let net_sock = sock.clone();
 
     tokio::task::spawn(async move {
         loop {
@@ -311,7 +322,7 @@ async fn main() {
                     continue;
                 }
 
-                if dst == LOOPBACK_ADDR {
+                if dst == LOOPBACK_ADDR || dst == wlt.ipv6.octets() {
                     packet[24..40].copy_from_slice(&wlt.ipv6.octets());
                     packet[8..24].copy_from_slice(&LOOPBACK_ADDR);
 
@@ -336,9 +347,17 @@ async fn main() {
                     continue;
                 }
 
-                if let Some(queue_inner) = send_queue.read().await.get(&route_to) {
-                    let _ = queue_inner.send(packet_for_p2p).await;
+                let mut msg = vec![crate::p2p_network::MsgType::Packet as u8];
+                msg.extend_from_slice(&packet_for_p2p.to_bytes());
+
+                if sock.send_to(&msg, route_to).await.is_err() {
+                    log_error!("Failed to forward packet to {}", crate::p2p_network::socketaddr_formatter(route_to));
+                    return;
                 }
+
+                // if let Some(queue_inner) = send_queue.read().await.get(&route_to) {
+                //     let _ = queue_inner.send(packet_for_p2p).await;
+                // }
 
                 *STATS.total_packets_sent.lock().await += 1;
             }
@@ -346,13 +365,11 @@ async fn main() {
     });
 
     p2p_network::p2p_job(
+        net_sock,
+        udp_inbound_rx,
         net_wlt,
-        peer_config.server_enabled,
-        peer_config.server_port.unwrap_or(4760),
         net_neighbors_db,
-        net_send_queue,
         net_tun_channel,
         peer_config.initial_peers,
-    )
-    .await;
+    ).await;
 }
