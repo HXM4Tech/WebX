@@ -3,6 +3,7 @@ use serde::{Deserialize, Deserializer};
 use std::net::{Ipv6Addr, SocketAddr};
 use std::process;
 use std::sync::Arc;
+use std::collections::HashSet;
 use tokio::sync::{Mutex, RwLock};
 
 #[macro_use]
@@ -89,17 +90,17 @@ struct Config {
     bind_addr: Option<SocketAddr>,
 
     #[serde(deserialize_with = "initial_peers_deserialize")]
-    initial_peers: Vec<SocketAddr>,
+    initial_peers: HashSet<SocketAddr>,
 }
 
-fn initial_peers_deserialize<'de, D>(de: D) -> Result<Vec<SocketAddr>, D::Error>
+fn initial_peers_deserialize<'de, D>(de: D) -> Result<HashSet<SocketAddr>, D::Error>
 where
     D: Deserializer<'de>,
 {
     use std::net::ToSocketAddrs;
 
     let unresolved = Vec::<String>::deserialize(de)?;
-    let mut resolved = vec![];
+    let mut resolved = HashSet::new();
 
     for a in unresolved {
         let a = match a.to_socket_addrs() {
@@ -114,7 +115,7 @@ where
             }
         };
 
-        resolved.push(a);
+        resolved.insert(a);
     }
     Ok(resolved)
 }
@@ -299,7 +300,7 @@ async fn main() {
             _ = sigint.recv() => eprintln!("\n{}", "SIGINT received, exiting...".yellow().bold()),
         }
 
-        sock_signalhandler.cleanup().await;
+        sock_signalhandler.close_all().await;
         process::exit(0);
     });
 

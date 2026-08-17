@@ -56,9 +56,10 @@ impl UdpHandler {
 
     pub async fn close(&self, target: SocketAddr) {
         self.peers.write().await.remove(&target);
+        self.socket.send_to(&[crate::p2p_network::MsgType::Disconnect as u8], target).await.ok();
     }
 
-    pub async fn cleanup(&self) {
+    pub async fn close_all(&self) {
         let mut peers = self.peers.write().await;
 
         for (peer, _tx) in peers.drain() {
