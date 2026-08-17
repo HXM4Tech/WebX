@@ -52,6 +52,9 @@ fn panic_hook(info: &std::panic::PanicHookInfo) {
 }
 
 fn drop_all_caps_except_net_admin() {
+    let _ = caps::clear(None, caps::CapSet::Ambient);
+    let _ = caps::clear(None, caps::CapSet::Inheritable);
+
     let caps = caps::read(None, caps::CapSet::Permitted).unwrap();
 
     for cap in caps {
@@ -59,9 +62,6 @@ fn drop_all_caps_except_net_admin() {
             let _ = caps::drop(None, caps::CapSet::Effective, cap);
             let _ = caps::drop(None, caps::CapSet::Permitted, cap);
         }
-
-        let _ = caps::drop(None, caps::CapSet::Ambient, cap);
-        let _ = caps::drop(None, caps::CapSet::Inheritable, cap);
     }
 }
 

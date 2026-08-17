@@ -1,6 +1,7 @@
 use colored::Colorize;
 use std::net::Ipv6Addr;
 use tun_tap::{Iface, Mode};
+use tokio::io::unix::AsyncFd;
 
 #[derive(Clone)]
 pub struct TunKanal {
@@ -9,17 +10,17 @@ pub struct TunKanal {
 }
 
 impl TunKanal {
-    pub fn new() -> (Self, kanal::Sender<Vec<u8>>, kanal::Receiver<Vec<u8>>) {
-        let (tx_front, rx_back) = kanal::unbounded_async();
-        let (tx_back, rx_front) = kanal::unbounded_async();
+    pub fn new() -> (Self, kanal::AsyncSender<Vec<u8>>, kanal::AsyncReceiver<Vec<u8>>) {
+        let (tx_front, rx_back) = kanal::bounded_async(2048);
+        let (tx_back, rx_front) = kanal::bounded_async(2048);
 
         (
             Self {
                 tx: tx_front,
                 rx: rx_front,
             },
-            tx_back.to_sync(),
-            rx_back.to_sync(),
+            tx_back,
+            rx_back,
         )
     }
 
@@ -106,32 +107,51 @@ impl Tun {
     }
 
     pub fn open_kanal(&mut self) -> TunKanal {
-        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::os::fd::{IntoRawFd, FromRawFd};
+        use std::fs::File;
+        use std::io::Write;
+        use std::sync::Arc;
 
         let (k, back_tx, back_rx) = TunKanal::new();
+
         let iface = self.iface.take().unwrap();
+        let fd = iface.into_raw_fd();
 
-        let dup_fd = unsafe { libc::dup(iface.as_raw_fd()) };
-        if dup_fd < 0 {
-            panic!("Failed to duplicate file descriptor for TUN interface");
-        }
+        let fd = unsafe {
+            let f = libc::fcntl(fd, libc::F_GETFL);
+            if f < 0 || libc::fcntl(fd, libc::F_SETFL, f | libc::O_NONBLOCK) < 0 {
+                panic!("Could not set O_NONBLOCK on TUN file descriptor");
+            }
 
-        let mut iface_reader = unsafe { std::fs::File::from_raw_fd(dup_fd) };
+            File::from_raw_fd(fd)
+        };
 
-        tokio::task::spawn_blocking(move || {
+        let fd_1 = Arc::new(
+            AsyncFd::new(fd).expect("Could not create AsyncFd for TUN")
+        );
+        let fd_2 = fd_1.clone();
+
+        tokio::task::spawn(async move {
             use std::io::Read;
             let mut buf = [0u8; 65535];
 
             loop {
-                if let Ok(n) = iface_reader.read(&mut buf[..]) {
-                    let _ = back_tx.send(buf[..n].to_vec());
+                if let Ok(mut guard) = fd_1.readable().await {
+                    match guard.try_io(|inner| inner.get_ref().read(&mut buf)) {
+                        Ok(Ok(n)) => {
+                            let _ = back_tx.send(buf[..n].to_vec()).await;
+                        },
+                        _ => continue
+                    }
                 }
             }
         });
 
-        tokio::task::spawn_blocking(move || loop {
-            if let Ok(data) = back_rx.recv() {
-                let _ = iface.send(&data);
+        tokio::task::spawn(async move {
+            while let Ok(data) = back_rx.recv().await {
+                if let Ok(mut guard) = fd_2.writable().await {
+                    let _ =  guard.try_io(|inner| inner.get_ref().write(&data));
+                }
             }
         });
 
