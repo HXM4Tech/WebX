@@ -18,6 +18,7 @@ pub const IPV6_PREFIX: u8 = 0xd4;
 pub struct Wallet {
     private_key: SigningKey,
     pub public_key: VerifyingKey,
+    pub public_key_checksum: u8,
     pub ipv6: Ipv6Addr,
 }
 
@@ -28,9 +29,13 @@ impl Wallet {
 
         let ipv6 = Self::generate_ipv6(&public_key);
 
+        let pubkey_sec1_bytes = public_key.to_sec1_bytes();
+        let public_key_checksum = pubkey_sec1_bytes.iter().fold(0u8, |acc, &b| acc ^ b) & 0b00111111;
+
         Self {
             private_key,
             public_key,
+            public_key_checksum,
             ipv6,
         }
     }
@@ -67,9 +72,13 @@ impl Wallet {
 
         let ipv6 = Self::generate_ipv6(public_key);
 
+        let pubkey_sec1_bytes = public_key.to_sec1_bytes();
+        let public_key_checksum = pubkey_sec1_bytes.iter().fold(0u8, |acc, &b| acc ^ b) & 0b00111111;
+
         let res = Self {
             private_key,
             public_key: *public_key,
+            public_key_checksum,
             ipv6,
         };
 
@@ -89,13 +98,15 @@ impl Wallet {
         std::fs::write(path, to_save)
     }
 
-    pub fn generate_ipv6_hash_part(public_key: &[u8]) -> [u8; 15] {
+    fn fill_ipv6_hash_part(public_key: &[u8], out: &mut [u8]) {
         let mut hasher = Hasher::new();
         hasher.update(public_key);
-        let mut hash = hasher.finalize_xof();
+        hasher.finalize_xof().fill(out);
+    }
 
+    pub fn generate_ipv6_hash_part(public_key: &[u8]) -> [u8; 15] {
         let mut res = [0u8; 15];
-        hash.fill(&mut res);
+        Self::fill_ipv6_hash_part(public_key, &mut res);
         res
     }
 
@@ -103,7 +114,7 @@ impl Wallet {
         let mut ipv6 = [0u8; 16];
 
         ipv6[0] = IPV6_PREFIX;
-        ipv6[1..16].copy_from_slice(&Self::generate_ipv6_hash_part(&public_key.to_sec1_bytes()));
+        Self::fill_ipv6_hash_part(&public_key.to_sec1_bytes(), &mut ipv6[1..16]);
 
         Ipv6Addr::from(ipv6)
     }
@@ -111,15 +122,15 @@ impl Wallet {
     pub fn sign_recoverable(&self, message: &[u8]) -> (Signature, RecoveryId) {
         let mut hasher = Hasher::new();
         hasher.update(message);
-        let prehash = hasher.finalize().as_slice().to_owned();
+        let prehash = hasher.finalize();
         
         let sig = self
             .private_key
-            .sign_prehash_with_rng(&mut UnwrapErr(SysRng), &prehash)
+            .sign_prehash_with_rng(&mut UnwrapErr(SysRng), prehash.as_slice())
             .unwrap();
 
         let recid =
-            RecoveryId::trial_recovery_from_prehash(&self.public_key, &prehash, &sig).unwrap();
+            RecoveryId::trial_recovery_from_prehash(&self.public_key, prehash.as_slice(), &sig).unwrap();
 
         (sig, recid)
     }

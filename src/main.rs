@@ -38,17 +38,36 @@ const LOOPBACK_ADDR: [u8; 16] = [
 ];
 
 fn panic_hook(info: &std::panic::PanicHookInfo) {
-    eprintln!(
-        "{} {}",
-        "Fatal error:".red().bold(),
-        info.to_string().red().bold()
-    );
+    use colored::Colorize;
+    let now = now!();
+
+    eprintln!("\n");
+    eprintln!("{} {} {}", now.dimmed(), "[FATAL]".red().bold(), "Fatal error occurred! Cannot continue operation.".red().bold());
+
+    info.to_string().split("\n").into_iter().for_each(|line| {
+        eprintln!("{} {} {}", now.dimmed(), "[FATAL]".red().bold(), line.red());
+    });
+
     process::exit(1);
 }
 
-fn with_ambient_cap_net_admin<F, T>(f: F) -> T
+fn drop_all_caps_except_net_admin() {
+    let caps = caps::read(None, caps::CapSet::Permitted).unwrap();
+
+    for cap in caps {
+        if cap != caps::Capability::CAP_NET_ADMIN {
+            let _ = caps::drop(None, caps::CapSet::Effective, cap);
+            let _ = caps::drop(None, caps::CapSet::Permitted, cap);
+        }
+
+        let _ = caps::drop(None, caps::CapSet::Ambient, cap);
+        let _ = caps::drop(None, caps::CapSet::Inheritable, cap);
+    }
+}
+
+fn with_onetime_cap_net_admin<F, T>(f: F) -> T
 where
-    F: FnOnce() -> T,
+    F: AsyncFnOnce() -> T
 {
     let caps_raised = if matches!(
         caps::has_cap(
@@ -57,29 +76,23 @@ where
             caps::Capability::CAP_NET_ADMIN,
         ),
         Ok(true)
-    ) && caps::raise(
-        None,
-        caps::CapSet::Inheritable,
-        caps::Capability::CAP_NET_ADMIN,
-    )
-    .is_ok()
-    {
-        caps::raise(None, caps::CapSet::Ambient, caps::Capability::CAP_NET_ADMIN).unwrap();
+    ) {
+        caps::raise(None, caps::CapSet::Effective, caps::Capability::CAP_NET_ADMIN).unwrap();
         true
     } else {
         false
     };
 
-    let t: T = f();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let t = rt.block_on(f());
 
     if caps_raised {
-        caps::drop(None, caps::CapSet::Ambient, caps::Capability::CAP_NET_ADMIN).unwrap();
-        caps::drop(
-            None,
-            caps::CapSet::Inheritable,
-            caps::Capability::CAP_NET_ADMIN,
-        )
-        .unwrap();
+        caps::drop(None, caps::CapSet::Effective, caps::Capability::CAP_NET_ADMIN).unwrap();
+        caps::drop(None, caps::CapSet::Permitted, caps::Capability::CAP_NET_ADMIN).unwrap();
     }
 
     t
@@ -102,14 +115,20 @@ where
     let unresolved = Vec::<String>::deserialize(de)?;
     let mut resolved = HashSet::new();
 
-    for a in unresolved {
-        let a = match a.to_socket_addrs() {
-            Ok(a) => a.collect::<Vec<_>>()[0],
+    for curr in unresolved {
+        let a = match curr.to_socket_addrs() {
+            Ok(mut a) => match a.next() {
+                Some(addr) => addr,
+                None => return Err(serde::de::Error::custom(format!("Unable to resolve address \"{}\"", curr))),
+            },
             Err(e) => {
-                let a = format!("{}:4760", a);
+                let a = format!("{}:4760", curr);
                 
                 match a.to_socket_addrs() {
-                    Ok(b) => b.collect::<Vec<_>>()[0],
+                    Ok(mut b) => match b.next() {
+                        Some(addr) => addr,
+                        None => return Err(serde::de::Error::custom(format!("Unable to resolve address \"{}\"", curr))),
+                    },
                     Err(_e1) => return Err(serde::de::Error::custom(e)),
                 }
             }
@@ -134,9 +153,9 @@ lazy_static! {
     };
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     std::panic::set_hook(Box::new(panic_hook));
+    drop_all_caps_except_net_admin();
 
     let (home_dir, user_uid) = {
         use users::os::unix::UserExt;
@@ -155,26 +174,28 @@ async fn main() {
             sudo_user = None; // fall back to root's home directory and uid
         }
 
-        match sudo_user {
-            Some(sudo_user) => {
-                let u = users::get_user_by_name(&sudo_user).unwrap();
+        let u;
 
-                log_warn!(
-                    "WebX daemon was started with `sudo`. This is not recommended; consider using libcap-ng to grant the binary CAP_NET_ADMIN instead."
-                );
+        if users::get_current_uid() == 0 {
+            log_warn!(
+                "WebX daemon was started as root. This is not recommended; consider using libcap-ng to grant the binary CAP_NET_ADMIN instead."
+            );
+
+            if let Some(sudo_user) = sudo_user {
+                u = users::get_user_by_name(&sudo_user).unwrap();
 
                 log_warn!(
                     "The configuration and wallet of user `{}` will be used instead of root. To load root's configuration and wallet, pass `--sudo-is-root` to the command line.",
                     sudo_user
                 );
-
-                (u.home_dir().display().to_string(), u.uid())
+            } else {
+                u = users::get_user_by_uid(0).unwrap();
             }
-            None => {
-                let u = users::get_user_by_uid(users::get_current_uid()).unwrap();
-                (u.home_dir().display().to_string(), u.uid())
-            }
+        } else {
+            u = users::get_user_by_uid(users::get_current_uid()).unwrap();
         }
+
+        (u.home_dir().display().to_string(), u.uid())
     };
 
     let (peer_config, wlt) = {
@@ -233,31 +254,16 @@ async fn main() {
                     });
 
                 let user_gid = users::get_user_by_uid(user_uid).unwrap().primary_group_id();
+                let wallet_path = format!("{home_dir}/.webx/wallet");
 
-                match std::process::Command::new("chown")
-                    .arg(format!("{user_uid}:{user_gid}"))
-                    .arg(format!("{home_dir}/.webx/wallet"))
-                    .spawn()
-                {
-                    Ok(mut child) => match child.wait() {
-                        Ok(status) => {
-                            if !status.success() {
-                                log_error!("Cannot set ownership on wallet file: {status}");
-                            }
-                        }
-                        Err(e) => {
-                            log_error!("Cannot set ownership on wallet file: {e}");
-                        }
-                    },
-                    Err(e) => {
-                        log_error!("Cannot set ownership on wallet file: {e}");
-                    }
+                if let Err(e) = std::os::unix::fs::chown(&wallet_path, Some(user_uid), Some(user_gid)) {
+                    log_error!("Cannot set ownership on wallet file `{wallet_path}`: {e}");
                 }
 
                 (c, wlt)
             }
             Err(e) => {
-                log_error!("Cannot parse config file at {config_file_path}:\n{e}");
+                log_error!("Cannot process the config file at {config_file_path}:\n{e}");
                 process::exit(1);
             }
         }
@@ -266,14 +272,32 @@ async fn main() {
     log_info!("Public key: {}", wlt.string_public_key());
     log_info!("IPv6: {}", wlt.ipv6);
 
-    let mut tun_if = with_ambient_cap_net_admin(|| {
+    let tun_if = with_onetime_cap_net_admin(|| async {
         let mut t = tun::Tun::new();
-        t.setup_ipv6(&wlt.ipv6);
+        t.setup(&wlt.ipv6).await;
+
+        log_ok!("TUN interface has been set up!");
+        log_info!("The interface has name: {}", t.name());
+
         t
     });
 
-    log_ok!("TUN interface has been set up!");
-    log_info!("The interface has name: {}", tun_if.name());
+    let tokio_rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to build Tokio runtime");
+
+    tokio_rt.block_on(async_main(peer_config, wlt, tun_if, user_uid));
+}
+
+
+async fn async_main(
+    peer_config: Config,
+    wlt: wallet::Wallet,
+    mut tun_if: tun::Tun,
+    user_uid: u32,
+) {
+    log_ok!("Entered asynchronous runtime!");
 
     let neighbors_db: Arc<RwLock<p2p_network::NeighborsDb>> =
         Arc::new(RwLock::new(p2p_network::NeighborsDb::new(wlt.ipv6)));
@@ -353,12 +377,8 @@ async fn main() {
 
                 if sock.send_to(&msg, route_to).await.is_err() {
                     log_error!("Failed to forward packet to {}", crate::p2p_network::socketaddr_formatter(route_to));
-                    return;
+                    continue;
                 }
-
-                // if let Some(queue_inner) = send_queue.read().await.get(&route_to) {
-                //     let _ = queue_inner.send(packet_for_p2p).await;
-                // }
 
                 *STATS.total_packets_sent.lock().await += 1;
             }

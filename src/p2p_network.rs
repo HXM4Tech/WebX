@@ -70,8 +70,9 @@ impl NeighborsDb {
     }
 
     pub fn unregister_neighbor(&mut self, sockaddr: SocketAddr) {
-        let index = self.neighbors.iter().position(|x| x.socketaddr == sockaddr);
-        self.neighbors.remove(index.unwrap());
+        if let Some(index) = self.neighbors.iter().position(|x| x.socketaddr == sockaddr) {
+            self.neighbors.remove(index);
+        }
     }
 
     pub fn get_sockaddr_to_route_to(&self, webx_ipv6: Ipv6Addr) -> SocketAddr {
@@ -122,7 +123,7 @@ impl NeighborsDb {
 #[derive(Debug)]
 pub struct PacketForP2P {
     pub ipv6_packet: Vec<u8>,
-    pub signature: Vec<u8>,
+    pub signature: [u8; 64],
     pub recid: u8,
 
     pub hop_limit: u8,
@@ -134,19 +135,11 @@ impl PacketForP2P {
         ipv6_packet[7] = 0; // clear hop limit as it should be able to change without breaking the signature
 
         let (signature, recid) = wlt.sign_recoverable(&ipv6_packet);
-        let public_key = wlt.public_key.to_sec1_bytes();
-
-        // calculate 6 bit checksum of public key
-        let mut checksum = 0;
-        for i in 0..32 {
-            checksum ^= public_key[i];
-            checksum %= 0b01000000;
-        }
 
         Self {
             ipv6_packet,
-            signature: signature.to_bytes().to_vec(),
-            recid: ((recid.to_byte() << 6) | checksum),
+            signature: signature.to_bytes().into(),
+            recid: ((recid.to_byte() << 6) | wlt.public_key_checksum),
             hop_limit,
         }
     }
@@ -167,7 +160,9 @@ impl PacketForP2P {
         let hop_limit = std::cmp::min(ipv6_packet[7], 16u8); // max hop limit is 16
         ipv6_packet[7] = 0; // clear hop limit as it should be able to change without breaking the signature
 
-        let signature = bytes[length..(length + 64)].to_vec();
+        let mut signature = [0u8; 64];
+        signature.copy_from_slice(&bytes[length..(length + 64)]);
+
         let recid = bytes[length + 64];
 
         Ok(Self {
@@ -179,13 +174,12 @@ impl PacketForP2P {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
+        let mut bytes = Vec::with_capacity(self.ipv6_packet.len() + 65);
 
-        let mut ipv6_packet_bytes = self.ipv6_packet.clone();
-        ipv6_packet_bytes[7] = self.hop_limit;
+        bytes.extend_from_slice(&self.ipv6_packet);
+        bytes[7] = self.hop_limit;
 
-        bytes.extend(ipv6_packet_bytes);
-        bytes.extend(self.signature.clone());
+        bytes.extend_from_slice(&self.signature);
         bytes.push(self.recid);
 
         bytes
@@ -197,23 +191,18 @@ impl PacketForP2P {
 
         let mut hasher = Hasher::new();
         hasher.update(&self.ipv6_packet);
-        let prehash = hasher.finalize().as_slice().to_owned();
+        let prehash = hasher.finalize();
 
         // recover the public key from the signature and recid
         let Ok(public_key) = VerifyingKey::recover_from_prehash(
-            &prehash,
+            prehash.as_slice(),
             &signature,
             recovery_id,
         ) else { return false; };
 
         // check public key checksum (last 6 bits of recid)
         let public_key_bytes = public_key.to_sec1_bytes();
-
-        let mut valid_checksum = 0;
-        for i in 0..32 {
-            valid_checksum ^= public_key_bytes[i];
-            valid_checksum %= 0b01000000;
-        }
+        let valid_checksum = public_key_bytes.iter().fold(0u8, |acc, &b| acc ^ b) & 0b00111111;
 
         if valid_checksum != (self.recid & 0b00111111) {
             return false;
@@ -304,10 +293,10 @@ async fn server(
 
             let mut hasher = Hasher::new();
             hasher.update(b"hello");
-            let prehash = hasher.finalize().as_slice().to_owned();
+            let prehash = hasher.finalize();
 
             let Ok(their_public_key) = VerifyingKey::recover_from_prehash(
-                &prehash,
+                prehash.as_slice(),
                 &hello_signature,
                 hello_recovery_id,
             ) else {
@@ -316,14 +305,9 @@ async fn server(
                 return;
             };
 
-            let their_public_key_bytes = their_public_key.to_sec1_bytes();
-
             // check public key checksum (last 6 bits of recid)
-            let mut valid_checksum = 0;
-            for i in 0..32 {
-                valid_checksum ^= their_public_key_bytes[i];
-                valid_checksum %= 0b01000000;
-            }
+            let their_public_key_bytes = their_public_key.to_sec1_bytes();
+            let valid_checksum = their_public_key_bytes.iter().fold(0u8, |acc, &b| acc ^ b) & 0b00111111;
 
             if valid_checksum != (hello_recid & 0b00111111) {
                 let _ = handler_sock.send_to(&[MsgType::Disconnect as u8], source).await;
@@ -351,19 +335,10 @@ async fn server(
             let hello_signature = hello_signature.to_bytes();
             let hello_recid = hello_recid.to_byte();
 
-            let our_pubkey_bytes = handler_wallet.public_key.to_sec1_bytes();
-
-            // algorithm to embed checksum in recid
-            let mut checksum = 0;
-            for i in 0..32 {
-                checksum ^= our_pubkey_bytes[i];
-                checksum %= 0b01000000;
-            }
-
             let mut our_hello_msg = Vec::new();
             our_hello_msg.extend_from_slice(&handler_wallet.ipv6.octets());
             our_hello_msg.extend_from_slice(&hello_signature);
-            our_hello_msg.push((hello_recid << 6) | checksum);
+            our_hello_msg.push((hello_recid << 6) | handler_wallet.public_key_checksum);
 
             if handler_sock.send_to(&our_hello_msg, source).await.is_err() {
                 handler_sock.close(source).await;
@@ -404,19 +379,10 @@ async fn client(
     let hello_signature = hello_signature.to_bytes();
     let hello_recid = hello_recid.to_byte();
 
-    let our_pubkey_bytes = our_wallet.public_key.to_sec1_bytes();
-
-    // algorithm to embed checksum in recid
-    let mut checksum = 0;
-    for i in 0..32 {
-        checksum ^= our_pubkey_bytes[i];
-        checksum %= 0b01000000;
-    }
-
     let mut our_hello_msg = Vec::new();
     our_hello_msg.extend_from_slice(&our_wallet.ipv6.octets());
     our_hello_msg.extend_from_slice(&hello_signature);
-    our_hello_msg.push((hello_recid << 6) | checksum);
+    our_hello_msg.push((hello_recid << 6) | our_wallet.public_key_checksum);
 
     if sock.send_to(&our_hello_msg, server_addr).await.is_err() {
         sock.close(server_addr).await;
@@ -471,10 +437,10 @@ async fn client(
 
                     let mut hasher = Hasher::new();
                     hasher.update(b"hello");
-                    let prehash = hasher.finalize().as_slice().to_owned();
+                    let prehash = hasher.finalize();
 
                     let Ok(their_public_key) = VerifyingKey::recover_from_prehash(
-                        &prehash,
+                        prehash.as_slice(),
                         &hello_signature,
                         hello_recovery_id,
                     ) else {
@@ -486,14 +452,9 @@ async fn client(
                         return Err("Auth failed".into());
                     };
 
-                    let their_public_key_bytes = their_public_key.to_sec1_bytes();
-
                     // check public key checksum (last 6 bits of recid)
-                    let mut valid_checksum = 0;
-                    for i in 0..32 {
-                        valid_checksum ^= their_public_key_bytes[i];
-                        valid_checksum %= 0b01000000;
-                    }
+                    let their_public_key_bytes = their_public_key.to_sec1_bytes();
+                    let valid_checksum = their_public_key_bytes.iter().fold(0u8, |acc, &b| acc ^ b) & 0b00111111;
 
                     if valid_checksum != (hello_recid & 0b00111111) {
                         sock.close(server_addr).await;
@@ -605,64 +566,58 @@ async fn handle_peer(
                             break;
                         },
                         MsgType::Packet => {
-                            if msg.len() < 41 {
-                                break; // invalid message
-                            }
-                            let ipv6_header = &msg[1..41];
-                            let payload_length = u16::from_be_bytes([ipv6_header[4], ipv6_header[5]]) as usize;
+                            match PacketForP2P::from_bytes(&msg[1..]) {
+                                Ok(mut packet) => {
+                                    inactivity_deadline = tokio::time::Instant::now() + inactivity_duration;
+                                    
+                                    if packet.ipv6_packet[24..40] == our_wallet.ipv6.octets() {
+                                        if packet.verify() {
+                                            // send to TUN interface
+                                            if tun_channel.send(packet.into_ipv6_packet()).await.is_err() {
+                                                log_error!("Failed to send packet to TUN interface");
+                                                continue;
+                                            }
+                                            *STATS.total_packets_received.lock().await += 1;
 
-                            if msg.len() != 41 + payload_length + 65 {
-                                break; // invalid message
-                            }
-
-                            if let Ok(mut packet) = PacketForP2P::from_bytes(&msg[1..]) {
-                                inactivity_deadline = tokio::time::Instant::now() + inactivity_duration;
-                                
-                                if packet.ipv6_packet[24..40] == our_wallet.ipv6.octets() {
-                                    if packet.verify() {
-                                        // send to TUN interface
-                                        if tun_channel.send(packet.into_ipv6_packet()).await.is_err() {
-                                            log_error!("Failed to send packet to TUN interface");
-                                            continue;
+                                        } else {
+                                            let addr: [u8; 16] = packet.ipv6_packet[24..40].try_into().unwrap();
+                                            log_error!("Packet from {} is not valid", Ipv6Addr::from(addr));
                                         }
-                                        *STATS.total_packets_received.lock().await += 1;
-
                                     } else {
-                                        let addr: [u8; 16] = packet.ipv6_packet[24..40].try_into().unwrap();
-                                        log_error!("Packet from {} is not valid", Ipv6Addr::from(addr));
+                                        let t_neighbors_db = neighbors_db.clone();
+                                        let t_sock = sock.clone();
+
+                                        tokio::task::spawn(async move {
+                                            if packet.hop_limit == 0 {
+                                                return;
+                                            }
+
+                                            packet.hop_limit -= 1;
+
+                                            let addr: [u8; 16] = packet.ipv6_packet[24..40].try_into().unwrap();
+                                            let addr = Ipv6Addr::from(addr);
+                                            let route_to = t_neighbors_db.read().await.get_sockaddr_to_route_to(addr);
+
+                                            if route_to == SocketAddr::from(([0, 0, 0, 0], 0)) || route_to == their_realaddr {
+                                                return;
+                                            }
+
+                                            let mut msg = vec![MsgType::Packet as u8];
+                                            msg.extend_from_slice(&packet.to_bytes());
+
+                                            if t_sock.send_to(&msg, route_to).await.is_err() {
+                                                log_error!("Failed to forward packet to {}", socketaddr_formatter(route_to));
+                                                return;
+                                            }
+
+                                            *STATS.total_packets_forwarded.lock().await += 1;
+                                        });
                                     }
-                                } else {
-                                    let t_neighbors_db = neighbors_db.clone();
-                                    let t_sock = sock.clone();
-
-                                    tokio::task::spawn(async move {
-                                        if packet.hop_limit == 0 {
-                                            return;
-                                        }
-
-                                        packet.hop_limit -= 1;
-
-                                        let addr: [u8; 16] = packet.ipv6_packet[24..40].try_into().unwrap();
-                                        let addr = Ipv6Addr::from(addr);
-                                        let route_to = t_neighbors_db.read().await.get_sockaddr_to_route_to(addr);
-
-                                        if route_to == SocketAddr::from(([0, 0, 0, 0], 0)) || route_to == their_realaddr {
-                                            return;
-                                        }
-
-                                        let mut msg = vec![MsgType::Packet as u8];
-                                        msg.extend_from_slice(&packet.to_bytes());
-
-                                        if t_sock.send_to(&msg, route_to).await.is_err() {
-                                            log_error!("Failed to forward packet to {}", socketaddr_formatter(route_to));
-                                            return;
-                                        }
-
-                                        *STATS.total_packets_forwarded.lock().await += 1;
-                                    });
+                                },
+                                Err(e) => {
+                                    log_error!("Invalid packet from {}", their_webx_ipv6);
+                                    log_error!("  Error: {}", e);
                                 }
-                            } else {
-                                log_error!("Failed to parse packet from {}", their_webx_ipv6);
                             }
                         },
                         MsgType::Unknown => {

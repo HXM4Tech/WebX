@@ -15,7 +15,7 @@ impl UdpHandler {
         let socket = Arc::new(UdpSocket::bind(addr).await?);
         let peers = Arc::new(RwLock::new(HashMap::<SocketAddr, kanal::AsyncSender<Vec<u8>>>::new()));
 
-        let (inbound_tx, inbound_rx) = kanal::unbounded_async::<(SocketAddr, Vec<u8>)>();
+        let (inbound_tx, inbound_rx) = kanal::bounded_async::<(SocketAddr, Vec<u8>)>(256);
 
         let s = Arc::clone(&socket);
         let p = Arc::clone(&peers);
@@ -32,9 +32,11 @@ impl UdpHandler {
                 };
 
                 if let Some(tx) = tx {
-                    let _ = tx.send(data).await;
+                    // send to the specific peer's channel or drop if the channel is full
+                    let _ = tx.try_send(data);
                 } else {
-                    let _ = inbound_tx.send((src, data)).await;
+                    // send to the inbound channel for new connections or drop if the channel is full
+                    let _ = inbound_tx.try_send((src, data)); 
                 }
             }
         });
@@ -44,7 +46,7 @@ impl UdpHandler {
 
     pub async fn connect(&self, target: SocketAddr) -> kanal::AsyncReceiver<Vec<u8>> {
         let target = Self::normalize_addr(target);
-        let (tx, rx) = kanal::unbounded_async::<Vec<u8>>();
+        let (tx, rx) = kanal::bounded_async::<Vec<u8>>(2048);
         self.peers.write().await.insert(target, tx);
 
         rx
@@ -55,8 +57,10 @@ impl UdpHandler {
     }
 
     pub async fn close(&self, target: SocketAddr) {
-        self.peers.write().await.remove(&target);
+        let target = Self::normalize_addr(target);
+        
         self.socket.send_to(&[crate::p2p_network::MsgType::Disconnect as u8], target).await.ok();
+        self.peers.write().await.remove(&target);
     }
 
     pub async fn close_all(&self) {

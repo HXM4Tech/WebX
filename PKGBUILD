@@ -7,7 +7,8 @@ pkgrel=1
 pkgdesc=$(grep -m1 "description" Cargo.toml | cut -d '"' -f2)
 arch=("x86_64" "i686" "armv7h" "aarch64")
 license=($(grep -m1 "license" Cargo.toml | cut -d '"' -f2))
-depends=("base" "libcap" "python")
+depends=("glibc" "libcap" "findutils" "python")
+optdepends=("systemd: to run as a system service")
 install="package-archlinux/install.sh"
 backup=("etc/webx/config.toml")
 

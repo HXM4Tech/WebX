@@ -12,15 +12,16 @@ post_install() {
 
 post_upgrade() {
         setcap CAP_NET_ADMIN+eip /usr/bin/webxd
-        systemctl daemon-reload 2> /dev/null || /bin/true
-        systemctl restart webx@\* --all 2> /dev/null || /bin/true
+
+        [[ -d /run/systemd/system ]] && systemctl daemon-reload 2> /dev/null || /bin/true
+        [[ -d /run/systemd/system ]] && systemctl restart webx@\* --all 2> /dev/null || /bin/true
 }
 
 pre_remove() {
-        systemctl stop --now webx@\* --all 2> /dev/null || /bin/true
+        [[ -d /run/systemd/system ]] && systemctl stop --now webx@\* --all 2> /dev/null || /bin/true
         find -L /etc/systemd/ -samefile /usr/lib/systemd/system/webx@.service -delete
 }
 
 post_remove() {
-        systemctl daemon-reload 2> /dev/null || /bin/true
+        [[ -d /run/systemd/system ]] && systemctl daemon-reload 2> /dev/null || /bin/true
 }

@@ -29,7 +29,8 @@ To prevent too long routes, a Hop Limit field of IPv6 (equivalent of IPv4's TTL 
 ### Dependencies
 You will need to have a rust toolchain installed along with `build-essential` package on Debian-based distros, `base-devel` on Arch-based distros or corresponding packages on other distros to build WebX.
 
-WebX itself also depends on `libcap`, `python3`, `findutils`, `iproute2` and `coreutils` packages, but those are usually preinstalled on most distros.
+WebX itself also depends on `glibc`, `libcap`, and `python3`, but those are usually preinstalled on most systems.
+`systemd` is required to run WebX daemon as a [system service](conf/webx@.service).
 
 You can get rust toolchain from [rustup.rs](https://rustup.rs/).
 
@@ -65,6 +66,8 @@ install -Dm755 "py-src/cli.py" "$HOME/.local/bin/webx-cli"
 install -Dm644 "config.toml" "$HOME/.webx/config.toml"
 ```
 After completing, ensure that `$HOME/.local/bin` is in your `$PATH`.
+
+The `setcap` command is used to grant WebX daemon capability necessary to set up the TUN interface. After the interface is set up, `CAP_NET_ADMIN` capability is dropped form the permitted set right away to prevent exploitation.
 
 ### Configuration
 If you used a package manager to install WebX, you can find the config file at `/etc/webx/config.toml`. You can override it by creating a config file at `~/.webx/config.toml`.

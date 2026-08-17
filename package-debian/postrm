@@ -1,3 +1,3 @@
-#!/bin/sh
+#!/usr/bin/env bash
 
-systemctl daemon-reload 2> /dev/null || /bin/true
+[[ -d /run/systemd/system ]] && systemctl daemon-reload 2> /dev/null || /bin/true

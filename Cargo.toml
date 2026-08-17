@@ -16,6 +16,9 @@ hex = "0.4.3"
 k256 = "0.14.0"
 kanal = "0.1.1"
 lazy_static = "1.5.0"
+libc = "0.2.189"
+netlink-packet-route = "0.32.1"
+rtnetlink = "0.22.0"
 serde = { version = "1.0.229", features = ["derive"] }
 tokio = { version = "1.53.1", features = ["net", "sync", "time", "macros", "io-util", "rt-multi-thread", "signal"] }
 toml = "1.1.4"
@@ -37,5 +40,6 @@ assets = [
     ["conf/config.toml", "etc/webx/config.toml", "644"],
     ["conf/webx@.service", "lib/systemd/system/webx@.service", "644"]
 ]
-depends = "coreutils, systemd, python3, libcap2, findutils, iproute2"
+depends = "libc6, python3, libcap2, findutils, bash"
+recommends = "systemd"
 section = "network"
