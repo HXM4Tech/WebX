@@ -269,7 +269,6 @@ async fn server(
 
         tokio::task::spawn(async move {
             if their_hello_msg.len() != 16 + 64 + 1 {
-                let _ = handler_sock.send_to(&[MsgType::Disconnect as u8], source).await;
                 // invalid handshake message length
                 return;
             }
