@@ -27,12 +27,15 @@ To prevent too long routes, a Hop Limit field of IPv6 (equivalent of IPv4's TTL 
 
 ## How to build and run it?
 ### Dependencies
-You will need to have a rust toolchain installed along with `build-essential` package on Debian-based distros, `base-devel` on Arch-based distros or corresponding packages on other distros to build WebX.
+To build WebX, you will need to have Rust toolchain installed along with `build-essential` package on Debian-based distros, `base-devel` on Arch-based distros or corresponding packages on other distros.
 
-WebX itself also depends on `glibc`, `libcap`, and `python3`, but those are usually preinstalled on most systems.
-`systemd` is required to run WebX daemon as a [system service](conf/webx@.service).
+WebX itself depends only on `glibc`, `libgcc`, and `python3` - those are present by default on most systems.
 
-You can get rust toolchain from [rustup.rs](https://rustup.rs/).
+Although the binary does not directly require it, `libcap` is used to manually grant WebX daemon capability to set up TUN interface without the need to run it as root.
+
+`systemd` is optional dependency to run WebX daemon as [service](conf/webx@.service).
+
+You can get Rust toolchain from [rustup.rs](https://rustup.rs/).
 
 ### Building
 If you're running Arch Linux or Debian-based distro (including Debian itself) it is recommended to build the package and install it using a package manager. Detailed instructions below.

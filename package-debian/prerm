@@ -1,8 +1,13 @@
-#!/usr/bin/env bash
+#!/bin/sh
 
-if [ $1 != "remove" ]; then
+set -e
+
+if [ "$1" != "remove" ]; then
     exit 0
 fi
 
-[[ -d /run/systemd/system ]] && systemctl stop --now webx@\* --all 2> /dev/nulll || /bin/true
-find -L /etc/systemd/ -samefile /lib/systemd/system/webx@.service -delete
+if [ -d /run/systemd/system ]; then
+    systemctl stop "webx@*" 2>/dev/null || true
+fi
+
+find -L /etc/systemd/ -samefile /usr/lib/systemd/system/webx@.service -delete 2>/dev/null || true

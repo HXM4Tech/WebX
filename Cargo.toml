@@ -1,6 +1,9 @@
 [package]
 name = "webx"
-description = "A decentralized P2P overlay network with cryptographic IPv6 addressing and source verification"
+description = "A decentralized P2P overlay network with cryptographic IPv6 addressing and packet verification"
+repository = "https://github.com/HXM4Tech/WebX"
+homepage = "https://github.com/HXM4Tech/WebX"
+readme = "README.md"
 version = "0.1.0"
 authors = ["Krzysztof Stefańczyk <krzys.stefanczyk@gmail.com>"]
 license = "MIT"
@@ -38,8 +41,17 @@ assets = [
     ["target/release/webx", "usr/bin/webxd", "755"],
     ["src/cli.py", "usr/bin/webx-cli", "755"],
     ["conf/config.toml", "etc/webx/config.toml", "644"],
-    ["conf/webx@.service", "lib/systemd/system/webx@.service", "644"]
+    ["conf/webx@.service", "lib/systemd/system/webx@.service", "644"],
+    ["README.md", "usr/share/doc/webx/README.md", "644"]
 ]
-depends = "libc6, python3, libcap2, findutils, bash"
+depends = "libc6, libgcc-s1, libcap2, findutils, python3"
 recommends = "systemd"
 section = "network"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+WebX is a decentralized P2P overlay network featuring cryptographic IPv6
+addressing and packet verification.
+
+Recommended packages:
+ * systemd: Needed to run the WebX daemon (webxd) as a system service.\
+"""

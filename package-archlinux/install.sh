@@ -1,27 +1,28 @@
-post_install() {
-        setcap CAP_NET_ADMIN+eip /usr/bin/webxd
-        systemctl daemon-reload 2> /dev/null || /bin/true
+#!/bin/bash
 
-        printf "\n"
-        printf "\033[32;1mWebX has been installed successfully!\033[0m\n"
-        printf "System-wide configuration file is located at /etc/webx/config.toml\n"
-        printf "You can start WebX by running 'systemctl start webx@{user}' as root\n"
-        printf "User provided as argument will, along with root, have access to WebX CLI (command 'webx-cli')\n"
-        printf "\n"
+post_install() {
+    setcap CAP_NET_ADMIN+eip /usr/bin/webxd 2>/dev/null || true
+
+    printf "\n"
+    printf "\033[32;1mWebX has been installed successfully!\033[0m\n"
+    printf "System-wide configuration file is located at /etc/webx/config.toml\n"
+    printf "You can start WebX as specified user by running \`systemctl start webx@{username}\` as root\n"
+    printf "User specified after @, along with root, will have access to WebX CLI (command 'webx-cli')\n"
+    printf "\n"
 }
 
 post_upgrade() {
-        setcap CAP_NET_ADMIN+eip /usr/bin/webxd
+    setcap CAP_NET_ADMIN+eip /usr/bin/webxd 2>/dev/null || true
 
-        [[ -d /run/systemd/system ]] && systemctl daemon-reload 2> /dev/null || /bin/true
-        [[ -d /run/systemd/system ]] && systemctl restart webx@\* --all 2> /dev/null || /bin/true
+    if command -v systemctl &>/dev/null && systemctl is-active --quiet "webx@*" 2>/dev/null; then
+        printf "\n\033[33;1mNotice:\033[0m WebX systemd unit file updated. Run \`systemctl restart \"webx@*\"\` as root to apply updates.\n\n"
+    fi
 }
 
 pre_remove() {
-        [[ -d /run/systemd/system ]] && systemctl stop --now webx@\* --all 2> /dev/null || /bin/true
-        find -L /etc/systemd/ -samefile /usr/lib/systemd/system/webx@.service -delete
-}
+    if [ -d /run/systemd/system ]; then
+        systemctl stop "webx@*" 2>/dev/null || true
+    fi
 
-post_remove() {
-        [[ -d /run/systemd/system ]] && systemctl daemon-reload 2> /dev/null || /bin/true
+    find -L /etc/systemd/ -samefile /usr/lib/systemd/system/webx@.service -delete 2>/dev/null || true
 }
